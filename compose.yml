@@ -11,7 +11,7 @@ services:
       start_period: 15s
 
   agent:
-    image: lagun-agent:latest
+    image: ${AGENT_IMAGE}
     userns_mode: keep-id
     environment:
       HTTP_PROXY: http://onecli:8080
@@ -19,7 +19,7 @@ services:
       NODE_EXTRA_CA_CERTS: /certs/onecli-ca.crt
     volumes:
       - .:/home/lagun/workspace
-      - ~/.config/claude-code:/home/lagun/.claude  # Claude Code auth persistence
+      - ~/.config/claude-code:/home/lagun/.config/claude-code
       - onecli_certs:/certs:ro
     depends_on:
       onecli:

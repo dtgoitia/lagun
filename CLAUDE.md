@@ -1,114 +1,176 @@
 # CLAUDE.md
 
-## Project Overview
+## What lagun is
 
-`lagun` is a reusable project template for safe agentic and non-agentic Python development, built on Nix flakes for full reproducibility.
+`lagun` is a Nix flake that consuming projects add as a `flake.nix` input. It provides:
 
-## Architecture
+- **`lib.mkAgentImage`** — builds a Podman-compatible (OCI) agent container image with Claude Code, the `lagun` user, and the varlock credential skill baked in.
+- **`packages.claudeCode`** and **`packages.varlock`** — pre-packaged musl binaries, usable directly in a consuming project's dev shell.
+- **`compose.yml`** — a ready-to-use Podman Compose file that starts the coding agent alongside OneCLI.
 
-### Two Modes of Operation
+There is no Python, no application code, and no copy-paste template here. Lagun is a development dependency.
 
-**Developer mode (non-agentic):** Run `./dev` at the project root. This calls `nix develop --command $SHELL`, preserving your host shell (fish, bash, zsh, etc.) and all host environment variables. The shell hook creates `.venv` if missing, syncs dependencies via `uv sync`, and activates the virtual environment.
+---
 
-**Agent mode (agentic):** Claude Code runs inside a Podman container. The workspace is mounted as a volume. No virtual environment — Python runs directly from the Nix-provided interpreter.
+## Two modes of operation
 
-### Credentials
+Every project built on lagun supports two modes. The key difference is **who runs** and **how credentials are injected**.
 
-- **Developer mode:** `varlock` injects real secrets as environment variables.
-- **Agent mode:** `varlock` injects dummy/fake secrets. `OneCLI` runs as a side container, intercepts all outgoing HTTP traffic via `HTTP_PROXY`/`HTTPS_PROXY`, and swaps dummy secrets for real ones in-flight.
+### Human mode (dev shell)
 
-## varlock
+A human developer works directly on the host inside a Nix-managed shell. Real secrets are injected by `varlock` into subprocesses on demand — they are never stored in environment variables or config files in plaintext.
 
-- Source: [dmno-dev/varlock](https://github.com/dmno-dev/varlock) — npm monorepo CLI (`varlock` v1.6.1), no `flake.nix`
-- Packaged in Nix via `fetchurl` + `stdenv.mkDerivation` using pre-built musl Linux binaries from GitHub releases
-- Claude Code skill: [wrsmith108/varlock-claude-skill](https://github.com/wrsmith108/varlock-claude-skill) — baked into the agent image at `/home/lagun/.claude/skills/varlock/SKILL.md`
+```
+host shell
+  └── nix develop  (or ./dev)
+        ├── tools on $PATH: alejandra, prettier, varlock, …, plus project-specific tools
+        └── varlock run -- <cmd>   ← real secrets injected into <cmd> only
+```
+
+Entry point:
+
+```sh
+./dev          # runs: nix develop --command $SHELL
+```
+
+The shell hook installs git hooks and runs any project-specific setup (e.g. `uv sync`).
+
+### Agent mode (container)
+
+A coding agent (Claude Code) runs isolated inside a Podman container. The container holds only **dummy/fake** secrets. OneCLI runs as a side container and acts as an HTTP proxy — it intercepts every outgoing HTTP request and swaps the dummy secrets for real ones in-flight. The real secrets never enter the agent container.
+
+```
+host
+  ├── OneCLI container  (HTTP proxy, holds real secrets, swaps them in-flight)
+  │     └── port 8080
+  └── agent container   (Claude Code, dummy secrets, HTTP_PROXY → OneCLI)
+        └── /home/lagun/workspace  ← project root mounted from host
+```
+
+Entry point:
+
+```sh
+AGENT_IMAGE=my-project-agent:latest podman compose up
+```
+
+`compose.yml` (provided by lagun) wires the two containers together, sets `HTTP_PROXY`/`HTTPS_PROXY` on the agent, and waits for OneCLI to be healthy before starting the agent.
+
+---
+
+## Credentials in each mode
+
+|                       | Human mode                 | Agent mode                         |
+| --------------------- | -------------------------- | ---------------------------------- |
+| Who runs              | Developer on host          | Claude Code in container           |
+| Real secrets location | Host, managed by `varlock` | OneCLI side container              |
+| Injection mechanism   | `varlock run -- <cmd>`     | OneCLI HTTP proxy (in-flight swap) |
+| Secrets in container  | n/a                        | Dummy values only                  |
+| Secrets on disk       | Never in plaintext         | Never                              |
+
+---
+
+## Using lagun in a consuming project
+
+```nix
+# flake.nix
+inputs.lagun.url = "github:wrsmith108/lagun";
+
+# Build the agent image
+packages.${system}.agentImage = lagun.lib.mkAgentImage {
+  inherit pkgs;
+  name = "my-project-agent";
+  extraPackages = [ /* project-specific packages */ ];
+};
+
+# Use claudeCode or varlock in the dev shell
+devShells.${system}.default = pkgs.mkShell {
+  packages = [ lagun.packages.${system}.varlock /* … */ ];
+};
+```
+
+The consuming project is responsible for:
+
+- Its own `shellHook` (or reuse lagun's `compose.yml` directly)
+- Building and loading the image: `nix build .#agentImage && podman load < result`
+- Deploying and running the image on whatever infrastructure it targets
+
+---
+
+## lib.mkAgentImage
+
+| Argument        | Type    | Default  | Description                            |
+| --------------- | ------- | -------- | -------------------------------------- |
+| `pkgs`          | attrset | required | `nixpkgs.legacyPackages.${system}`     |
+| `name`          | string  | required | Image name (e.g. `"my-project-agent"`) |
+| `extraPackages` | list    | `[]`     | Additional Nix packages to include     |
+| `extraEnv`      | list    | `[]`     | Additional `"KEY=value"` env strings   |
+
+Always included: `claude`, `coreutils`, `bash`, `/etc/passwd` with the `lagun` user (uid 1000), and the varlock Claude Code skill at `~/.claude/skills/varlock/SKILL.md`. `NODE_EXTRA_CA_CERTS=/certs/onecli-ca.crt` is pre-set; `HTTP_PROXY`/`HTTPS_PROXY` are wired by `compose.yml` at runtime.
+
+---
+
+## compose.yml
+
+`compose.yml` is provided by lagun and works unchanged in any consuming project. The only required variable is `AGENT_IMAGE`:
+
+```sh
+AGENT_IMAGE=my-project-agent:latest podman compose up
+```
+
+Or set it in a `.env` file at the project root:
+
+```
+AGENT_IMAGE=my-project-agent:latest
+```
+
+The file defines:
+
+- **`onecli`** — `ghcr.io/onecli/onecli:1.36`, with a health check that waits for its CA cert to be ready
+- **`agent`** — the project's image, with `HTTP_PROXY`/`HTTPS_PROXY` pointing at OneCLI, the workspace mounted, and Claude Code auth persisted from the host
+
+---
+
+## varlock and the varlock Claude Code skill
+
+- Source: [dmno-dev/varlock](https://github.com/dmno-dev/varlock) v1.6.1 (musl binary, no npm install)
 - Key commands: `varlock load` (validate + show masked values), `varlock run -- <cmd>` (inject secrets into subprocess)
-- Secret variable names: TBD — to be defined once secrets are known (see `questions.md`)
+- Claude Code skill: [wrsmith108/varlock-claude-skill](https://github.com/wrsmith108/varlock-claude-skill) — baked into every image built by `lib.mkAgentImage`; teaches the agent never to echo secrets
 
-## Repository Structure
+---
 
-```
-.
-├── flake.nix              # Nix flake — pins Python 3.13, uv, alejandra, all dev tools + git hooks
-├── pyproject.toml         # Python project metadata and tool configuration
-├── dev                    # Executable wrapper: runs `nix develop --command $SHELL`
-├── compose.yml            # Podman Compose — agent + OneCLI containers
-├── CLAUDE.md              # This file
-├── src/lagun/             # src layout — package root
-│   └── __init__.py
-└── tests/
-    └── test_placeholder.py
+## Developing lagun itself
+
+The dev shell for working on lagun is minimal — only what's needed to edit Nix and Markdown:
+
+```sh
+./dev          # runs: nix develop --command $SHELL
 ```
 
-## Nix Flake
+Tools available: `alejandra` (Nix formatter), `prettier` (Markdown/YAML). Git hooks run both automatically on commit.
 
-- Channel: `nixos-unstable`
-- Python: pinned to 3.13, managed entirely by Nix
-- `uv` manages dependency resolution and installation; Nix manages the interpreter
-- The flake is designed for later NixOS VPS deployment — keep it container-friendly
-- Supported systems: `x86_64-linux`, `aarch64-linux`
-
-## Developer Shell (`nix develop` / `./dev`)
-
-- Entry point: `./dev` — runs `nix develop --command $SHELL`
-- The `shellHook` does **not** switch shells or execute commands directly
-- On enter:
-  1. Creates `.venv` if it does not exist
-  2. Runs `uv sync` to install/sync dependencies (set `SKIP_UV_SYNC=1` on the host to bypass)
-  3. Activates `.venv`
-
-## Git Hooks
-
-Hooks are managed by [`git-hooks.nix`](https://github.com/cachix/git-hooks.nix) (`github:cachix/git-hooks.nix`), declared directly in `flake.nix`. No `.pre-commit-config.yaml` file — all hook config lives alongside the Nix package pins. Entering the dev shell via `nix develop` / `./dev` installs the hooks into `.git/hooks/` automatically.
-
-| Hook | Tool |
-|------|------|
-| File ends with newline | `end-of-file-fixer` |
-| Markdown formatting | `prettier` (via Nix) |
-| Nix formatting | `alejandra` |
-| Python linting/formatting | `ruff` |
-| Python type checking | `ty` (Astral — custom hook if not built-in) |
-| Python tests | `pytest` via `uv run pytest` (custom hook) |
-
-## Agent Container
-
-- Base: pure NixOS image via `pkgs.dockerTools.buildLayeredImage`
-- Orchestration: Podman Compose (`compose.yml`)
-- Run with: `--userns=keep-id`
-- Container user: `lagun`
-- Workspace mount: host project root → `/home/lagun/workspace`
-- Auth persistence: host `~/.config/claude-code` mounted into `/home/lagun/.config/claude-code`
-- Image contents: Python 3.13, `uv`, Claude Code — no extra tools; keep the image minimal
-- Claude Code: baked into the image via Nix, pinned with `prefetch-npm-deps`
-- No CPU or memory resource limits
-
-### OneCLI Side Container
-
-- Image: `ghcr.io/onecli/onecli:1.36`
-- Configuration: environment variables only — all config passed via `environment:` in `compose.yml`
-- Shares a named volume `onecli_certs` for the CA certificate bundle
-- Agent container sets `NODE_EXTRA_CA_CERTS` to trust the OneCLI CA
-- Agent container sets `HTTP_PROXY`/`HTTPS_PROXY` to route traffic through OneCLI
-- Agent container waits for OneCLI to be healthy before starting
+---
 
 ## Updating Claude Code
 
-Claude Code is packaged using the per-platform musl npm packages (e.g. `@anthropic-ai/claude-code-linux-x64-musl`). The glibc binary expects a dynamic linker at `/lib64/ld-linux-x86-64.so.2`, which doesn't exist in a pure NixOS container image. The musl variant is statically linked with no such dependency, so it works anywhere without patching.
+Claude Code is packaged from the per-platform musl npm tarballs (statically linked — no dynamic linker dependency, works in any minimal container image).
 
-To update the pinned version:
-1. Find the new version on [npmjs.com](https://www.npmjs.com/package/@anthropic-ai/claude-code)
-2. Compute the SHA256 SRI hash for each platform's musl tarball:
+1. Find the new version at [npmjs.com/@anthropic-ai/claude-code](https://www.npmjs.com/package/@anthropic-ai/claude-code)
+2. Compute SRI hashes:
    ```sh
    nix-prefetch-url --type sha256 \
      https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64-musl/-/claude-code-linux-x64-musl-VERSION.tgz
    ```
-3. Update the `version` string and both platform `hash` values in `flake.nix` under the `claudeCode` derivation
+3. Update `version` and both `hash` values inside `buildClaudeCode` in `flake.nix`
 
-## Key Constraints
+---
 
-- No database
-- No CI/CD
-- IDE agnostic — no editor-specific config files
-- Linux only (`x86_64-linux`, `aarch64-linux`)
-- Do not use virtual environments inside the agent container
-- Do not use `--no-verify` to skip pre-commit hooks — fix the underlying issue instead
+## Repository structure
+
+```
+.
+├── flake.nix    # outputs: lib.mkAgentImage, packages.claudeCode, packages.varlock
+├── flake.lock   # pinned inputs
+├── compose.yml  # Podman Compose — agent + OneCLI; set AGENT_IMAGE before running
+├── dev          # ./dev → nix develop --command $SHELL
+└── CLAUDE.md    # this file
+```
