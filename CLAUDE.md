@@ -17,6 +17,12 @@
 - **Developer mode:** `varlock` injects real secrets as environment variables.
 - **Agent mode:** `varlock` injects dummy/fake secrets. `OneCLI` runs as a side container, intercepts all outgoing HTTP traffic via `HTTP_PROXY`/`HTTPS_PROXY`, and swaps dummy secrets for real ones in-flight.
 
+## varlock
+
+- Source: [dmno-dev/varlock](https://github.com/dmno-dev/varlock) — must be wrapped in a Nix flake (not in nixpkgs)
+- Claude Code skill: [wrsmith108/varlock-claude-skill](https://github.com/wrsmith108/varlock-claude-skill)
+- Secret variable names: TBD — to be defined once secrets are known (see `questions.md`)
+
 ## Repository Structure
 
 ```
@@ -27,7 +33,7 @@
 ├── dev                    # Executable wrapper: runs `nix develop --command $SHELL`
 ├── compose.yml            # Podman Compose — agent + OneCLI containers
 ├── CLAUDE.md              # This file
-└── src/lagun/             # (TBD — awaiting confirmation of layout)
+└── src/lagun/             # src layout — package root
 ```
 
 ## Nix Flake
@@ -54,7 +60,7 @@ All hooks are managed via Nix (the `pre-commit` binary is not installed separate
 | Hook | Tool |
 |------|------|
 | File ends with newline | `end-of-file-fixer` |
-| Markdown formatting | TBD (mdformat or prettier — see questions.md) |
+| Markdown formatting | `prettier` (via Nix) |
 | Nix formatting | `alejandra` |
 | Python linting/formatting | `ruff` |
 | Python type checking | `ty` (native hook, Astral) |
@@ -65,12 +71,17 @@ All hooks are managed via Nix (the `pre-commit` binary is not installed separate
 - Base: pure NixOS image via `pkgs.dockerTools.buildLayeredImage`
 - Orchestration: Podman Compose (`compose.yml`)
 - Run with: `--userns=keep-id`
+- Container user: `lagun`
+- Workspace mount: host project root → `/home/lagun/workspace`
+- Auth persistence: host `~/.config/claude-code` mounted into `/home/lagun/.config/claude-code`
+- Image contents: Python 3.13, `uv`, Claude Code — no extra tools; keep the image minimal
 - Claude Code: baked into the image via Nix, pinned with `prefetch-npm-deps`
-- Auth persistence: host `~/.config/claude-code` mounted into `/home/agent/.config/claude-code`
+- No CPU or memory resource limits
 
 ### OneCLI Side Container
 
 - Image: `ghcr.io/onecli/onecli:1.36`
+- Configuration: environment variables only — all config passed via `environment:` in `compose.yml`
 - Shares a named volume `onecli_certs` for the CA certificate bundle
 - Agent container sets `NODE_EXTRA_CA_CERTS` to trust the OneCLI CA
 - Agent container sets `HTTP_PROXY`/`HTTPS_PROXY` to route traffic through OneCLI
