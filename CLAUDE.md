@@ -53,9 +53,9 @@
   2. Runs `uv sync` to install/sync dependencies (set `SKIP_UV_SYNC=1` on the host to bypass)
   3. Activates `.venv`
 
-## Pre-commit Hooks
+## Git Hooks
 
-All hooks are managed via Nix (the `pre-commit` binary is not installed separately).
+Hooks are managed by [`git-hooks.nix`](https://github.com/cachix/git-hooks.nix) (`github:cachix/git-hooks.nix`), declared directly in `flake.nix`. No `.pre-commit-config.yaml` file — all hook config lives alongside the Nix package pins. Entering the dev shell via `nix develop` / `./dev` installs the hooks into `.git/hooks/` automatically.
 
 | Hook | Tool |
 |------|------|
@@ -63,8 +63,8 @@ All hooks are managed via Nix (the `pre-commit` binary is not installed separate
 | Markdown formatting | `prettier` (via Nix) |
 | Nix formatting | `alejandra` |
 | Python linting/formatting | `ruff` |
-| Python type checking | `ty` (native hook, Astral) |
-| Python tests | `pytest` via `uv run pytest` |
+| Python type checking | `ty` (Astral — custom hook if not built-in) |
+| Python tests | `pytest` via `uv run pytest` (custom hook) |
 
 ## Agent Container
 

@@ -10,7 +10,8 @@ Tracks every deliverable described in `CLAUDE.md`. Work top-to-bottom; later sec
 - [ ] **Understand varlock-claude-skill** — read `https://github.com/wrsmith108/varlock-claude-skill`: what does this skill do and does it need to be bundled into the image or installed separately?
 - [ ] **Pin Claude Code version** — find the current `@anthropic-ai/claude-code` version on npmjs.com, run `nix run nixpkgs#prefetch-npm-deps` to obtain the hash, record both in `flake.nix`.
 - [ ] **Confirm `ty` availability** — check whether `ty` (Astral type checker) is in `nixpkgs-unstable`; if not, plan a fallback (e.g. install via `uv tool` or build from source).
-- [ ] **Confirm `prettier` in nixpkgs** — verify `pkgs.nodePackages.prettier` or `pkgs.prettier` exists in nixos-unstable and works as a pre-commit hook binary.
+- [ ] **Confirm `prettier` in nixpkgs** — verify `pkgs.nodePackages.prettier` or `pkgs.prettier` exists in nixos-unstable and is usable as a git-hooks-nix hook binary.
+- [ ] **Confirm `ty` git-hooks-nix support** — check whether `git-hooks.nix` has a built-in `ty` hook; if not, plan the custom hook declaration (`id`, `entry`, `language = "system"`).
 - [ ] **Decide varlock Nix flake input strategy** — if varlock is an npm package, add it as a `flake.nix` input via `github:dmno-dev/varlock` only if the repo contains a `flake.nix`; otherwise write a `buildNpmPackage` derivation inline.
 
 ---
@@ -25,13 +26,14 @@ Tracks every deliverable described in `CLAUDE.md`. Work top-to-bottom; later sec
 
 ## 3. Nix Flake — Dev Shell
 
-- [ ] **Scaffold `flake.nix`** — declare inputs (`nixpkgs` → nixos-unstable, `flake-utils`), outputs scoped to `["x86_64-linux" "aarch64-linux"]`.
-- [ ] **Dev shell packages** — include `python313`, `uv`, `pre-commit`, `alejandra`, `prettier` (or `nodePackages.prettier`), and any tool needed for the `ty` hook.
-- [ ] **`shellHook`** — implement the three-step sequence:
-  1. `if [ ! -d .venv ]; then uv venv .venv; fi`
-  2. `if [ -z "${SKIP_UV_SYNC:-}" ]; then uv sync; fi`
-  3. `source .venv/bin/activate`
-- [ ] **Verify dev shell** — run `nix develop` (or `./dev`) and confirm Python, uv, pre-commit, and prettier are all on `$PATH`.
+- [ ] **Scaffold `flake.nix`** — declare inputs: `nixpkgs` → nixos-unstable, `flake-utils`, `git-hooks` → `github:cachix/git-hooks.nix`; scope outputs to `["x86_64-linux" "aarch64-linux"]`.
+- [ ] **Dev shell packages** — include `python313`, `uv`, `alejandra`, `prettier` (or `nodePackages.prettier`), and any tool needed for the `ty` hook. Do **not** add `pre-commit` manually — git-hooks-nix manages it.
+- [ ] **`shellHook`** — compose git-hooks-nix's generated `shellHook` with the project's own three-step sequence:
+  1. `${config.pre-commit.installationScript}` (git-hooks-nix auto-installs hooks)
+  2. `if [ ! -d .venv ]; then uv venv .venv; fi`
+  3. `if [ -z "${SKIP_UV_SYNC:-}" ]; then uv sync; fi`
+  4. `source .venv/bin/activate`
+- [ ] **Verify dev shell** — run `nix develop` (or `./dev`) and confirm Python, uv, prettier, and alejandra are on `$PATH` and `.git/hooks/pre-commit` is installed.
 
 ---
 
@@ -43,20 +45,22 @@ Tracks every deliverable described in `CLAUDE.md`. Work top-to-bottom; later sec
 
 ---
 
-## 5. Pre-commit Hooks
+## 5. Git Hooks (git-hooks-nix)
 
-- [ ] **Create `.pre-commit-config.yaml`** — wire up all six hooks using Nix-managed binaries:
+Hooks are declared in `flake.nix` under `git-hooks.lib.${system}.run { ... }`. No `.pre-commit-config.yaml` is needed.
 
-  | Hook | Repo / tool |
+- [ ] **Declare all six hooks in `flake.nix`**:
+
+  | Hook | git-hooks-nix key / approach |
   |---|---|
-  | `end-of-file-fixer` | `https://github.com/pre-commit/pre-commit-hooks` |
-  | Markdown (`prettier`) | `local` hook using system `prettier` |
-  | Nix (`alejandra`) | `local` hook using system `alejandra` |
-  | Python lint/format (`ruff`) | `local` hook using system `ruff` |
-  | Python types (`ty`) | `local` hook using system `ty` (or `uv run ty`) |
-  | Python tests (`pytest`) | `local` hook: `uv run pytest` |
+  | File endings | built-in `end-of-file-fixer` |
+  | Markdown (`prettier`) | built-in `prettier` pointing to `pkgs.prettier` |
+  | Nix (`alejandra`) | built-in `alejandra` pointing to `pkgs.alejandra` |
+  | Python lint/format (`ruff`) | built-in `ruff` pointing to `pkgs.ruff` |
+  | Python types (`ty`) | custom hook (`language = "system"`, `entry = "ty check"`) if no built-in |
+  | Python tests (`pytest`) | custom hook (`language = "system"`, `entry = "uv run pytest"`) |
 
-- [ ] **Verify hooks** — run `pre-commit run --all-files` and confirm all hooks pass on the initial skeleton.
+- [ ] **Verify hooks** — enter dev shell and run `pre-commit run --all-files`; confirm all six hooks pass on the initial skeleton.
 
 ---
 
@@ -110,7 +114,7 @@ Tracks every deliverable described in `CLAUDE.md`. Work top-to-bottom; later sec
 
 ## 9. Verification & Polish
 
-- [ ] **End-to-end developer mode test** — run `./dev`, confirm shell activates, `python --version` returns 3.13, `uv`, `pre-commit`, `prettier`, `alejandra` are on PATH.
+- [ ] **End-to-end developer mode test** — run `./dev`, confirm shell activates, `python --version` returns 3.13, `uv`/`prettier`/`alejandra` are on PATH, and `.git/hooks/pre-commit` exists.
 - [ ] **End-to-end agent mode test** — build image (`nix build .#agentImage`), load it into Podman, run `podman compose up`, confirm agent container starts and OneCLI is reachable.
 - [ ] **Pre-commit clean run** — `pre-commit run --all-files` passes with zero violations on the initial skeleton.
 - [ ] **Update `CLAUDE.md` repository structure** — reflect any paths added during implementation (e.g. `tests/`, varlock config file, etc.).
