@@ -19,21 +19,25 @@
 
 ## varlock
 
-- Source: [dmno-dev/varlock](https://github.com/dmno-dev/varlock) — must be wrapped in a Nix flake (not in nixpkgs)
-- Claude Code skill: [wrsmith108/varlock-claude-skill](https://github.com/wrsmith108/varlock-claude-skill)
+- Source: [dmno-dev/varlock](https://github.com/dmno-dev/varlock) — npm monorepo CLI (`varlock` v1.6.1), no `flake.nix`
+- Packaged in Nix via `fetchurl` + `stdenv.mkDerivation` using pre-built musl Linux binaries from GitHub releases
+- Claude Code skill: [wrsmith108/varlock-claude-skill](https://github.com/wrsmith108/varlock-claude-skill) — baked into the agent image at `/home/lagun/.claude/skills/varlock/SKILL.md`
+- Key commands: `varlock load` (validate + show masked values), `varlock run -- <cmd>` (inject secrets into subprocess)
 - Secret variable names: TBD — to be defined once secrets are known (see `questions.md`)
 
 ## Repository Structure
 
 ```
 .
-├── flake.nix              # Nix flake — pins Python 3.13, uv, pre-commit, alejandra, all dev tools
+├── flake.nix              # Nix flake — pins Python 3.13, uv, alejandra, all dev tools + git hooks
 ├── pyproject.toml         # Python project metadata and tool configuration
-├── .pre-commit-config.yaml
 ├── dev                    # Executable wrapper: runs `nix develop --command $SHELL`
 ├── compose.yml            # Podman Compose — agent + OneCLI containers
 ├── CLAUDE.md              # This file
-└── src/lagun/             # src layout — package root
+├── src/lagun/             # src layout — package root
+│   └── __init__.py
+└── tests/
+    └── test_placeholder.py
 ```
 
 ## Nix Flake
@@ -89,10 +93,16 @@ Hooks are managed by [`git-hooks.nix`](https://github.com/cachix/git-hooks.nix) 
 
 ## Updating Claude Code
 
-To update the Claude Code version pinned in the Nix flake:
-1. Find the new version on npmjs.com or the Claude Code release page
-2. Run `nix run nixpkgs#prefetch-npm-deps` with the new package tarball URL to obtain the new hash
-3. Update the version string and hash in `flake.nix`
+Claude Code is packaged using the per-platform musl npm packages (e.g. `@anthropic-ai/claude-code-linux-x64-musl`). The glibc binary expects a dynamic linker at `/lib64/ld-linux-x86-64.so.2`, which doesn't exist in a pure NixOS container image. The musl variant is statically linked with no such dependency, so it works anywhere without patching.
+
+To update the pinned version:
+1. Find the new version on [npmjs.com](https://www.npmjs.com/package/@anthropic-ai/claude-code)
+2. Compute the SHA256 SRI hash for each platform's musl tarball:
+   ```sh
+   nix-prefetch-url --type sha256 \
+     https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64-musl/-/claude-code-linux-x64-musl-VERSION.tgz
+   ```
+3. Update the `version` string and both platform `hash` values in `flake.nix` under the `claudeCode` derivation
 
 ## Key Constraints
 

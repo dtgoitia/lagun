@@ -6,42 +6,38 @@ Tracks every deliverable described in `CLAUDE.md`. Work top-to-bottom; later sec
 
 ## 1. Research & Decisions
 
-- [ ] **Understand varlock** — read `https://github.com/dmno-dev/varlock`: is it a Node/npm CLI, a binary, or something else? Determine how to package it in Nix (e.g. `buildNpmPackage`, `mkDerivation`, fetched binary).
-- [ ] **Understand varlock-claude-skill** — read `https://github.com/wrsmith108/varlock-claude-skill`: what does this skill do and does it need to be bundled into the image or installed separately?
-- [ ] **Pin Claude Code version** — find the current `@anthropic-ai/claude-code` version on npmjs.com, run `nix run nixpkgs#prefetch-npm-deps` to obtain the hash, record both in `flake.nix`.
-- [ ] **Confirm `ty` availability** — check whether `ty` (Astral type checker) is in `nixpkgs-unstable`; if not, plan a fallback (e.g. install via `uv tool` or build from source).
-- [ ] **Confirm `prettier` in nixpkgs** — verify `pkgs.nodePackages.prettier` or `pkgs.prettier` exists in nixos-unstable and is usable as a git-hooks-nix hook binary.
-- [ ] **Confirm `ty` git-hooks-nix support** — check whether `git-hooks.nix` has a built-in `ty` hook; if not, plan the custom hook declaration (`id`, `entry`, `language = "system"`).
-- [ ] **Decide varlock Nix flake input strategy** — if varlock is an npm package, add it as a `flake.nix` input via `github:dmno-dev/varlock` only if the repo contains a `flake.nix`; otherwise write a `buildNpmPackage` derivation inline.
+- [x] **Understand varlock** — Node/npm monorepo CLI (package `varlock` v1.6.1). No `flake.nix` in repo. Ships pre-built Linux binaries (glibc + musl variants) in GitHub releases. Packaged via `fetchurl` + `stdenv.mkDerivation`. Uses `varlock load` / `varlock run -- <cmd>` for secret injection.
+- [x] **Understand varlock-claude-skill** — pure-text Claude Code skill at `skills/varlock/SKILL.md`. Teaches Claude never to echo secrets. Install by copying to `~/.claude/skills/varlock/SKILL.md`; baked into the agent image at build time. No binary, no npm install needed.
+- [x] **Pin Claude Code version** — `@anthropic-ai/claude-code` v2.1.175. Native binary distributed via per-platform npm packages (e.g. `@anthropic-ai/claude-code-linux-x64-musl`). Using musl variant to avoid glibc issues in NixOS images. Hashes recorded in `flake.nix`.
+- [x] **Confirm `ty` availability** — `pkgs.ty` (v0.0.46) exists in `nixos-unstable` at `pkgs/by-name/ty/ty`. Available in devShell as `pkgs.ty`.
+- [x] **Confirm `prettier` in nixpkgs** — `pkgs.prettier` exists in `nixos-unstable` at `pkgs/by-name/pr/prettier`. Used directly.
+- [x] **Confirm `ty` git-hooks-nix support** — no built-in `ty` hook in git-hooks.nix. Declared as custom hook (`language = "system"`, `entry = "ty check"`, `pass_filenames = false`).
+- [x] **Decide varlock Nix flake input strategy** — no `flake.nix` in varlock repo. Using `fetchurl` + `stdenv.mkDerivation` with pre-built musl binaries from GitHub releases.
 
 ---
 
 ## 2. Core Project Skeleton
 
-- [ ] **Create `src/lagun/__init__.py`** — empty file; establishes the src-layout package root.
-- [ ] **Create `dev` executable** — one-liner: `#!/usr/bin/env sh` + `exec nix develop --command $SHELL`; `chmod +x`.
-- [ ] **Create `pyproject.toml`** — project metadata for `lagun`, src layout (`packages = [{include = "lagun", from = "src"}]`), tool sections for `ruff`, `ty`, and `pytest`.
+- [x] **Create `src/lagun/__init__.py`** — empty file; establishes the src-layout package root.
+- [x] **Create `dev` executable** — `#!/usr/bin/env sh` + `exec nix develop --command "$SHELL"`; `chmod +x`.
+- [x] **Create `pyproject.toml`** — project metadata, hatchling build backend, src layout, ruff/ty/pytest config.
 
 ---
 
 ## 3. Nix Flake — Dev Shell
 
-- [ ] **Scaffold `flake.nix`** — declare inputs: `nixpkgs` → nixos-unstable, `flake-utils`, `git-hooks` → `github:cachix/git-hooks.nix`; scope outputs to `["x86_64-linux" "aarch64-linux"]`.
-- [ ] **Dev shell packages** — include `python313`, `uv`, `alejandra`, `prettier` (or `nodePackages.prettier`), and any tool needed for the `ty` hook. Do **not** add `pre-commit` manually — git-hooks-nix manages it.
-- [ ] **`shellHook`** — compose git-hooks-nix's generated `shellHook` with the project's own three-step sequence:
-  1. `${config.pre-commit.installationScript}` (git-hooks-nix auto-installs hooks)
-  2. `if [ ! -d .venv ]; then uv venv .venv; fi`
-  3. `if [ -z "${SKIP_UV_SYNC:-}" ]; then uv sync; fi`
-  4. `source .venv/bin/activate`
+- [x] **Scaffold `flake.nix`** — inputs: `nixpkgs` → nixos-unstable, `flake-utils`, `git-hooks` → `github:cachix/git-hooks.nix`; outputs scoped to `["x86_64-linux" "aarch64-linux"]`.
+- [x] **Dev shell packages** — `python313`, `uv`, `alejandra`, `prettier`, `ty`, `ruff`, `varlock`. No manual `pre-commit` — git-hooks.nix manages it.
+- [x] **`shellHook`** — composes `gitHooks.shellHook` (hook installation) with venv creation, `uv sync`, and `.venv/bin/activate`.
 - [ ] **Verify dev shell** — run `nix develop` (or `./dev`) and confirm Python, uv, prettier, and alejandra are on `$PATH` and `.git/hooks/pre-commit` is installed.
 
 ---
 
 ## 4. Python Tooling Config
 
-- [ ] **`ruff` config in `pyproject.toml`** — set `line-length`, `target-version = "py313"`, sensible lint rule selection.
-- [ ] **`ty` config in `pyproject.toml`** — point `src` at `src/`, enable strict mode if desired.
-- [ ] **`pytest` config in `pyproject.toml`** — set `testpaths = ["tests"]`, add `tests/` directory with a placeholder `test_placeholder.py` that passes.
+- [x] **`ruff` config in `pyproject.toml`** — `line-length = 88`, `target-version = "py313"`, `select = ["E", "F", "I", "UP"]`.
+- [x] **`ty` config in `pyproject.toml`** — `environment.python-version = "3.13"`.
+- [x] **`pytest` config in `pyproject.toml`** — `testpaths = ["tests"]`; `tests/test_placeholder.py` created.
 
 ---
 
@@ -49,56 +45,38 @@ Tracks every deliverable described in `CLAUDE.md`. Work top-to-bottom; later sec
 
 Hooks are declared in `flake.nix` under `git-hooks.lib.${system}.run { ... }`. No `.pre-commit-config.yaml` is needed.
 
-- [ ] **Declare all six hooks in `flake.nix`**:
+- [x] **Declare all six hooks in `flake.nix`**:
 
   | Hook | git-hooks-nix key / approach |
   |---|---|
   | File endings | built-in `end-of-file-fixer` |
-  | Markdown (`prettier`) | built-in `prettier` pointing to `pkgs.prettier` |
-  | Nix (`alejandra`) | built-in `alejandra` pointing to `pkgs.alejandra` |
-  | Python lint/format (`ruff`) | built-in `ruff` pointing to `pkgs.ruff` |
-  | Python types (`ty`) | custom hook (`language = "system"`, `entry = "ty check"`) if no built-in |
+  | Markdown (`prettier`) | built-in `prettier` with `pkgs.prettier` |
+  | Nix (`alejandra`) | built-in `alejandra` with `pkgs.alejandra` |
+  | Python lint (`ruff`) | built-in `ruff` with `pkgs.ruff` |
+  | Python format (`ruff-format`) | built-in `ruff-format` with `pkgs.ruff` |
+  | Python types (`ty`) | custom hook (`language = "system"`, `entry = "ty check"`) |
   | Python tests (`pytest`) | custom hook (`language = "system"`, `entry = "uv run pytest"`) |
 
-- [ ] **Verify hooks** — enter dev shell and run `pre-commit run --all-files`; confirm all six hooks pass on the initial skeleton.
+- [ ] **Verify hooks** — enter dev shell and run `pre-commit run --all-files`; confirm all hooks pass on the initial skeleton.
 
 ---
 
 ## 6. Agent Container Image
 
-- [ ] **Add `agentImage` package to `flake.nix`** — use `pkgs.dockerTools.buildLayeredImage`:
-  - `name = "lagun-agent"`, `tag = "latest"`
-  - `contents`: `python313`, `uv`, Claude Code (npm package derivation)
-  - `config.User = "lagun"`, set `HOME`, `PATH`
-- [ ] **Create `lagun` user in image** — add a `passwdEntry` / `groupEntry` or use `pkgs.fakeNss` so the `lagun` user exists inside the container.
-- [ ] **Package Claude Code via Nix** — write a `buildNpmPackage` (or `mkDerivation` with `prefetch-npm-deps`) derivation for `@anthropic-ai/claude-code` at the pinned version+hash from step 1.3.
-- [ ] **Package varlock via Nix** — write the derivation determined in step 1.1 / 1.6. Expose it as `packages.varlock`.
-- [ ] **Set container environment defaults** — bake `NODE_EXTRA_CA_CERTS`, `HOME=/home/lagun`, `PATH` into `config.Env` in the image definition.
+- [x] **Add `agentImage` package to `flake.nix`** — `pkgs.dockerTools.buildLayeredImage` with `python313`, `uv`, `claudeCode` (musl), `coreutils`, `bash`, `containerEtc`, `containerHome`.
+- [x] **Create `lagun` user in image** — `containerEtc` derivation writes `/etc/passwd` and `/etc/group` with `lagun:x:1000:1000`.
+- [x] **Package Claude Code via Nix** — `fetchurl` + `mkDerivation` using the musl npm binary packages. x64 and arm64 hashes pinned in `flake.nix`.
+- [x] **Package varlock via Nix** — `fetchurl` + `mkDerivation` using musl GitHub release binaries. Exposed as `packages.varlock`.
+- [x] **Set container environment defaults** — `HOME=/home/lagun`, `PATH` (via `lib.makeBinPath`), `NODE_EXTRA_CA_CERTS=/certs/onecli-ca.crt` in `config.Env`.
+- [x] **varlock-claude-skill baked into image** — `varlockSkill` fetched via `pkgs.fetchurl`; placed at `/home/lagun/.claude/skills/varlock/SKILL.md` via `containerHome` derivation.
+- [ ] **Verify image builds** — run `nix build .#agentImage`, load into Podman, confirm `claude` binary runs.
 
 ---
 
 ## 7. Podman Compose
 
-- [ ] **Create `compose.yml`** — define two services:
-
-  **`onecli` service**
-  - Image: `ghcr.io/onecli/onecli:1.36`
-  - Mount named volume `onecli_certs:/certs` (or wherever OneCLI writes its CA)
-  - Add healthcheck so the agent waits for it
-
-  **`agent` service**
-  - Image: built from `flake.nix` `agentImage` output (or reference by name/tag)
-  - `userns_mode: keep-id`
-  - Volumes:
-    - `.:/home/lagun/workspace` (workspace)
-    - `~/.config/claude-code:/home/lagun/.config/claude-code` (auth persistence)
-    - `onecli_certs:/certs:ro` (CA bundle)
-  - Environment:
-    - `HTTP_PROXY` / `HTTPS_PROXY` → OneCLI proxy address
-    - `NODE_EXTRA_CA_CERTS` → path to OneCLI CA cert inside container
-  - `depends_on: onecli: condition: service_healthy`
-
-- [ ] **Define named volume** — `volumes: onecli_certs:` at the top level of `compose.yml`.
+- [x] **Create `compose.yml`** — `onecli` and `agent` services defined.
+- [x] **Define named volume** — `onecli_certs:` at top level.
 - [ ] **Verify compose file parses** — run `podman compose config` (or `docker compose config`) and confirm no YAML/schema errors.
 
 ---

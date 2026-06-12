@@ -1,0 +1,29 @@
+services:
+  onecli:
+    image: ghcr.io/onecli/onecli:1.36
+    volumes:
+      - onecli_certs:/certs
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /certs/onecli-ca.crt"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  agent:
+    image: lagun-agent:latest
+    userns_mode: keep-id
+    environment:
+      HTTP_PROXY: http://onecli:8080
+      HTTPS_PROXY: http://onecli:8080
+      NODE_EXTRA_CA_CERTS: /certs/onecli-ca.crt
+    volumes:
+      - .:/home/lagun/workspace
+      - ~/.config/claude-code:/home/lagun/.claude  # Claude Code auth persistence
+      - onecli_certs:/certs:ro
+    depends_on:
+      onecli:
+        condition: service_healthy
+
+volumes:
+  onecli_certs:
