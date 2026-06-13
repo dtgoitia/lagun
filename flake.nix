@@ -170,7 +170,7 @@
           };
         };
       in {
-        lib = lib;
+        inherit lib;
 
         packages = {
           claudeCode = buildClaudeCode pkgs;
