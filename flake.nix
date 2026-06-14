@@ -113,6 +113,28 @@
               '';
             };
           };
+
+          setGitIgnore = rec {
+            cliName = "set-gitignore";
+            cliBin = "${cli}/bin/${cliName}";
+            cli = pkgs.writeShellApplication {
+              name = cliName;
+              text = ''
+                GITIGNORE=".gitignore"
+                AGENT_DIR=".agent/"
+
+                if [ ! -f "$GITIGNORE" ]; then
+                  echo "$AGENT_DIR" >> "$GITIGNORE"
+                  echo ".agent/ added to $GITIGNORE"
+                fi
+
+                if ! grep -qxF "$AGENT_DIR" "$GITIGNORE"; then
+                  echo "$AGENT_DIR" >> "$GITIGNORE"
+                  echo ".agent/ added to $GITIGNORE"
+                fi
+              '';
+            };
+          };
         };
 
         buildClaudeCodeFromNpm = {}; # TODO
@@ -280,6 +302,8 @@
             ];
             shellHook = ''
               ${gitHooks.shellHook}
+
+              ${customAgentInPodman.setGitIgnore.cliBin}
 
               echo "lagun agent container:" >&2
               echo "" >&2
