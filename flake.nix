@@ -20,6 +20,25 @@
       system: let
         pkgs = nixpkgs.legacyPackages.${system};
 
+        buildClaudeCodeFromNpm = pkgs:
+          pkgs.buildNpmPackage rec {
+            pname = "claude-code";
+            version = "2.1.175";
+
+            src = pkgs.fetchurl {
+              url = "https://npmjs.org/claude-code-${version}.tgz";
+              hash = "sha256-R7RscOskh+49Z6D5oK9jZk+lqEymvB8D0LzLzS9IidQ="; # Note: Ensure you fetch the root package or correct architecture source hash
+              # hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+            };
+
+            # Required for buildNpmPackage to lock down node_modules safely
+            npmDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+            # or you can bypass it if it's a single standalone script.
+            npmAuthToken = "";
+            dontNpmBuild = true;
+          };
+
         # ── Internal builders (take pkgs, return derivations) ──────────────────
         # Claude Code — musl (statically linked, no glibc dep, works in NixOS images)
         # Version: 2.1.175 — update via CLAUDE.md "Updating Claude Code" instructions
@@ -133,7 +152,7 @@
             extraPackages ? [],
             extraEnv ? [],
           }: let
-            claudeCode = buildClaudeCode pkgs;
+            claudeCode = buildClaudeCodeFromNpm pkgs;
             containerEtc = buildContainerEtc pkgs;
             containerHome = buildContainerHome pkgs;
             basePkgs = [claudeCode pkgs.coreutils pkgs.bash];
@@ -173,7 +192,7 @@
         inherit lib;
 
         packages = {
-          claudeCode = buildClaudeCode pkgs;
+          claudeCode = buildClaudeCodeFromNpm pkgs;
           varlock = buildVarlock pkgs;
         };
 
