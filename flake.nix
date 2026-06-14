@@ -20,24 +20,94 @@
       system: let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        buildClaudeCodeFromNpm = pkgs:
-          pkgs.buildNpmPackage rec {
-            pname = "claude-code";
-            version = "2.1.175";
+        agentInPodman = rec {
+          imageName = "lagun";
+          containerName = "lagun";
+          workdir = "/workspace";
 
-            src = pkgs.fetchurl {
-              url = "https://npmjs.org/claude-code-${version}.tgz";
-              hash = "sha256-R7RscOskh+49Z6D5oK9jZk+lqEymvB8D0LzLzS9IidQ="; # Note: Ensure you fetch the root package or correct architecture source hash
-              # hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-            };
+          dockerfile = pkgs.writeTextFile {
+            name = "lagun-Dockerfile";
+            text = ''
+              FROM docker.io/library/node:20-slim
 
-            # Required for buildNpmPackage to lock down node_modules safely
-            npmDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+              RUN apt-get update && apt-get install -y \
+                  git \
+                  curl \
+                  make \
+                  && rm -rf /var/lib/apt/lists/*
 
-            # or you can bypass it if it's a single standalone script.
-            npmAuthToken = "";
-            dontNpmBuild = true;
+              RUN npm install -g @anthropic-ai/claude-code
+
+              WORKDIR ${workdir}
+
+              CMD ["claude"]
+            '';
           };
+
+          buildImage = rec {
+            cliName = "build-agent-oci-image-into-podman";
+            cli = pkgs.writeShellApplication {
+              name = cliName;
+              text = ''
+                if ! command -v podman &> /dev/null; then
+                  echo "Error: expected podman in PATH, but not found" >&2
+                  exit 1
+                fi
+
+                if podman image exists "${imageName}"; then
+                  echo "image '${imageName}' already exists, skipping build" >&2
+                  exit 2
+                fi
+
+                echo "building '${imageName}' image..." >&2
+                podman build -f "${dockerfile}" -t ${imageName}
+                echo "image '${imageName}' built successfully" >&2
+              '';
+            };
+          };
+
+          runContainer = rec {
+            cliName = "run-agent-in-podman";
+            cli = pkgs.writeShellApplication {
+              name = cliName;
+              text = ''
+                if ! command -v podman &> /dev/null; then
+                  echo "Error: expected podman in PATH, but not found" >&2
+                  exit 1
+                fi
+
+                if ! podman image exists "${imageName}"; then
+                  echo "image '${imageName}' not found in podman" >&2
+                  echo "to build image, run" >&2
+                  echo "" >&2
+                  echo "  ${buildImage.cliName}" >&2
+                  echo "" >&2
+                  exit 1
+                fi
+
+                echo "creating .agent/ directory" >&2
+                mkdir -p .agent/{.config,.claude}
+
+                echo "spinning up container in the background... (name='${containerName}')" >&2
+                podman run --detach                   \
+                  --name ${containerName}             \
+                  -v .:${workdir}:Z                   \
+                  -v .agent/.config:/root/.config:Z   \
+                  -v .agent/.claude:/root/.claude:Z   \
+                  -v ${workdir}/.agent                \
+                  -w ${workdir}                       \
+                  ${imageName} sleep infinity
+                echo "container is successfully running in the background" >&2
+                echo "" >&2
+                echo "to shell in:         podman exec -it ${containerName} bash" >&2
+                echo "to use Claude Code:  podman exec -it ${containerName} claude" >&2
+                echo "" >&2
+              '';
+            };
+          };
+        };
+
+        buildClaudeCodeFromNpm = {}; # TODO
 
         # ── Internal builders (take pkgs, return derivations) ──────────────────
         # Claude Code — musl (statically linked, no glibc dep, works in NixOS images)
@@ -146,7 +216,7 @@
           #
           # The image always includes: claude, coreutils, bash, the lagun user, and the varlock skill.
           # Proxy and cert env vars for OneCLI are pre-set; add HTTP_PROXY/HTTPS_PROXY via compose.
-          mkAgentImage = {
+          mkAgentLeanImage = {
             pkgs,
             name,
             extraPackages ? [],
@@ -202,8 +272,19 @@
           packages = [
             pkgs.alejandra
             pkgs.prettier
+
+            agentInPodman.buildImage.cli
+            agentInPodman.runContainer.cli
           ];
-          shellHook = gitHooks.shellHook;
+          shellHook = ''
+            ${gitHooks.shellHook}
+
+            echo "lagun agent container:" >&2
+            echo "" >&2
+            echo "  ${agentInPodman.buildImage.cliName}" >&2
+            echo "  ${agentInPodman.runContainer.cliName}" >&2
+            echo "" >&2
+          '';
         };
       }
     );
