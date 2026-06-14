@@ -86,15 +86,15 @@
                 fi
 
                 echo "creating .agent/ directory" >&2
-                mkdir -p .agent/{.config,.claude}
+                mkdir -p .agent/{config,claude}
 
                 echo "spinning up container in the background... (name='${containerName}')" >&2
                 if ! podman container exists "${containerName}" 2>/dev/null; then
                   podman run --detach                   \
                     --name ${containerName}             \
                     -v .:${workdir}:Z                   \
-                    -v .agent/.config:/root/.config:Z   \
-                    -v .agent/.claude:/root/.claude:Z   \
+                    -v .agent/config:/root/.config:Z   \
+                    -v .agent/claude:/root/.claude:Z   \
                     -v ${workdir}/.agent                \
                     -w ${workdir}                       \
                     ${imageName} sleep infinity
