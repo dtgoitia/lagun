@@ -20,9 +20,9 @@
       system: let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        agentInPodman = rec {
-          imageName = "lagun";
-          containerName = "lagun";
+        agentInPodman = consumer: rec {
+          imageName = "${consumer}-lagun";
+          containerName = "${consumer}-lagun";
           workdir = "/workspace";
 
           dockerfile = pkgs.writeTextFile {
@@ -89,15 +89,23 @@
                 mkdir -p .agent/{.config,.claude}
 
                 echo "spinning up container in the background... (name='${containerName}')" >&2
-                podman run --detach                   \
-                  --name ${containerName}             \
-                  -v .:${workdir}:Z                   \
-                  -v .agent/.config:/root/.config:Z   \
-                  -v .agent/.claude:/root/.claude:Z   \
-                  -v ${workdir}/.agent                \
-                  -w ${workdir}                       \
-                  ${imageName} sleep infinity
-                echo "container is successfully running in the background" >&2
+                if ! podman container exists "${containerName}" 2>/dev/null; then
+                  podman run --detach                   \
+                    --name ${containerName}             \
+                    -v .:${workdir}:Z                   \
+                    -v .agent/.config:/root/.config:Z   \
+                    -v .agent/.claude:/root/.claude:Z   \
+                    -v ${workdir}/.agent                \
+                    -w ${workdir}                       \
+                    ${imageName} sleep infinity
+                  echo "container successfully started in the background" >&2
+                elif [ "running" = "$(podman container inspect -f '{{.State.Status}}' "${containerName}" 2>/dev/null)" ]; then
+                  echo "container already running" >&2
+                else
+                  echo "container already existed but was stopped" >&2
+                  podman start ${containerName} 2>/dev/null 1>/dev/null
+                  echo "container restarted" >&2
+                fi
                 echo "" >&2
                 echo "to shell in:         podman exec -it ${containerName} bash" >&2
                 echo "to use Claude Code:  podman exec -it ${containerName} claude" >&2
@@ -258,33 +266,41 @@
             };
           };
         };
+
+        shell = name: let
+          customAgentInPodman = agentInPodman name;
+        in
+          pkgs.mkShell {
+            packages = [
+              pkgs.alejandra
+              pkgs.prettier
+
+              customAgentInPodman.buildImage.cli
+              customAgentInPodman.runContainer.cli
+            ];
+            shellHook = ''
+              ${gitHooks.shellHook}
+
+              echo "lagun agent container:" >&2
+              echo "" >&2
+              echo "  ${customAgentInPodman.buildImage.cliName}" >&2
+              echo "  ${customAgentInPodman.runContainer.cliName}" >&2
+              echo "" >&2
+            '';
+          };
       in {
         inherit lib;
 
         packages = {
-          claudeCode = buildClaudeCodeFromNpm pkgs;
+          inherit agentInPodman;
           varlock = buildVarlock pkgs;
         };
 
         pre-commit-check = gitHooks;
 
-        devShells.default = pkgs.mkShell {
-          packages = [
-            pkgs.alejandra
-            pkgs.prettier
-
-            agentInPodman.buildImage.cli
-            agentInPodman.runContainer.cli
-          ];
-          shellHook = ''
-            ${gitHooks.shellHook}
-
-            echo "lagun agent container:" >&2
-            echo "" >&2
-            echo "  ${agentInPodman.buildImage.cliName}" >&2
-            echo "  ${agentInPodman.runContainer.cliName}" >&2
-            echo "" >&2
-          '';
+        devShells = {
+          createShell = shell;
+          default = shell "lagun";
         };
       }
     );
