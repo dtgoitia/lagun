@@ -72,105 +72,40 @@ AGENT_IMAGE=my-project-agent:latest podman compose up
 ## Using lagun in a consuming project
 
 ```nix
-# flake.nix
-inputs.lagun.url = "github:wrsmith108/lagun";
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
+    lagun = {
+      url = "github:dtgoitia/lagun?ref=main";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
 
-# Build the agent image
-packages.${system}.agentImage = lagun.lib.mkAgentImage {
-  inherit pkgs;
-  name = "my-project-agent";
-  extraPackages = [ /* project-specific packages */ ];
-};
+  outputs = {
+    self,
+    nixpkgs,
+    flake-utils,
+    lagun,
+  }:
+    flake-utils.lib.eachDefaultSystem (
+      system: let
+        name = "consumer-project";
 
-# Use claudeCode or varlock in the dev shell
-devShells.${system}.default = pkgs.mkShell {
-  packages = [ lagun.packages.${system}.varlock /* … */ ];
-};
+        pkgs = nixpkgs.legacyPackages.${system};
+        lagunShell = lagun.devShells.${system}.createShell name;
+      in {
+
+        devShells.default = pkgs.mkShell {
+          inputsFrom = [ lagunShell ];
+
+          packages = [
+            # add more packages
+          ];
+        };
+      }
+    );
+}
 ```
 
-The consuming project is responsible for:
-
-- Its own `shellHook` (or reuse lagun's `compose.yml` directly)
-- Building and loading the image: `nix build .#agentImage && podman load < result`
-- Deploying and running the image on whatever infrastructure it targets
-
----
-
-## lib.mkAgentImage
-
-| Argument        | Type    | Default  | Description                            |
-| --------------- | ------- | -------- | -------------------------------------- |
-| `pkgs`          | attrset | required | `nixpkgs.legacyPackages.${system}`     |
-| `name`          | string  | required | Image name (e.g. `"my-project-agent"`) |
-| `extraPackages` | list    | `[]`     | Additional Nix packages to include     |
-| `extraEnv`      | list    | `[]`     | Additional `"KEY=value"` env strings   |
-
-Always included: `claude`, `coreutils`, `bash`, `/etc/passwd` with the `lagun` user (uid 1000), and the varlock Claude Code skill at `~/.claude/skills/varlock/SKILL.md`. `NODE_EXTRA_CA_CERTS=/certs/onecli-ca.crt` is pre-set; `HTTP_PROXY`/`HTTPS_PROXY` are wired by `compose.yml` at runtime.
-
----
-
-## compose.yml
-
-`compose.yml` is provided by lagun and works unchanged in any consuming project. The only required variable is `AGENT_IMAGE`:
-
-```sh
-AGENT_IMAGE=my-project-agent:latest podman compose up
-```
-
-Or set it in a `.env` file at the project root:
-
-```
-AGENT_IMAGE=my-project-agent:latest
-```
-
-The file defines:
-
-- **`onecli`** — `ghcr.io/onecli/onecli:1.36`, with a health check that waits for its CA cert to be ready
-- **`agent`** — the project's image, with `HTTP_PROXY`/`HTTPS_PROXY` pointing at OneCLI, the workspace mounted, and Claude Code auth persisted from the host
-
----
-
-## varlock and the varlock Claude Code skill
-
-- Source: [dmno-dev/varlock](https://github.com/dmno-dev/varlock) v1.6.1 (musl binary, no npm install)
-- Key commands: `varlock load` (validate + show masked values), `varlock run -- <cmd>` (inject secrets into subprocess)
-- Claude Code skill: [wrsmith108/varlock-claude-skill](https://github.com/wrsmith108/varlock-claude-skill) — baked into every image built by `lib.mkAgentImage`; teaches the agent never to echo secrets
-
----
-
-## Developing lagun itself
-
-The dev shell for working on lagun is minimal — only what's needed to edit Nix and Markdown:
-
-```sh
-./dev          # runs: nix develop --command $SHELL
-```
-
-Tools available: `alejandra` (Nix formatter), `prettier` (Markdown/YAML). Git hooks run both automatically on commit.
-
----
-
-## Updating Claude Code
-
-Claude Code is packaged from the per-platform musl npm tarballs (statically linked — no dynamic linker dependency, works in any minimal container image).
-
-1. Find the new version at [npmjs.com/@anthropic-ai/claude-code](https://www.npmjs.com/package/@anthropic-ai/claude-code)
-2. Compute SRI hashes:
-   ```sh
-   nix-prefetch-url --type sha256 \
-     https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64-musl/-/claude-code-linux-x64-musl-VERSION.tgz
-   ```
-3. Update `version` and both `hash` values inside `buildClaudeCode` in `flake.nix`
-
----
-
-## Repository structure
-
-```
-.
-├── flake.nix    # outputs: lib.mkAgentImage, packages.claudeCode, packages.varlock
-├── flake.lock   # pinned inputs
-├── compose.yml  # Podman Compose — agent + OneCLI; set AGENT_IMAGE before running
-├── dev          # ./dev → nix develop --command $SHELL
-└── CLAUDE.md    # this file
-```
+The consuming project is responsible for its own `shellHook`.
