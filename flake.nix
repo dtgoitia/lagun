@@ -67,6 +67,7 @@
                     - .agent/claude:/root/.claude:Z
                     - ${certsVolumeName}:/certs:ro
                     - ${workdir}/.agent
+                    - .agent/empty-file:${workdir}/.envrc:ro   # keep .envrc out of the agent's reach
                   networks:
                     - onecli
 
@@ -159,6 +160,7 @@
 
                 echo "creating .agent/ directory" >&2
                 mkdir -p .agent/{config,claude}
+                touch .agent/empty-file
 
                 echo "rendering compose file to .agent/compose.yml" >&2
                 install -m 644 "${composeFile}" .agent/compose.yml
