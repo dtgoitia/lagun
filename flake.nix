@@ -21,9 +21,13 @@
         pkgs = nixpkgs.legacyPackages.${system};
 
         agentInPodman = consumer: rec {
-          imageName = "${consumer}-lagun";
-          containerName = "${consumer}-lagun";
+          agentImageName = "${consumer}-lagun";
+          agentContainerName = "${consumer}-lagun-agent";
+          onecliContainerName = "${consumer}-lagun-onecli";
+          certsVolumeName = "${consumer}-lagun-onecli-certs";
           workdir = "/workspace";
+          oneCliUiPort = "10254";
+          oneCliPort = "10255";
 
           dockerfile = pkgs.writeTextFile {
             name = "lagun-Dockerfile";
@@ -44,6 +48,77 @@
             '';
           };
 
+          composeFile = pkgs.writeTextFile {
+            name = "lagun-compose.yml";
+            text = ''
+              services:
+                agent:
+                  container_name: ${agentContainerName}
+                  image: ${agentImageName}
+                  command: sleep infinity
+                  environment:
+                    HTTP_PROXY: http://onecli:${oneCliPort}
+                    HTTPS_PROXY: http://onecli:${oneCliPort}
+                    NODE_EXTRA_CA_CERTS: /certs/onecli-ca.crt
+                  working_dir: ${workdir}
+                  volumes:
+                    - .:${workdir}:Z
+                    - .agent/config:/root/.config:Z
+                    - .agent/claude:/root/.claude:Z
+                    - ${certsVolumeName}:/certs:ro
+                    - ${workdir}/.agent
+                  networks:
+                    - onecli
+
+                onecli:
+                  container_name: ${onecliContainerName}
+                  image: ghcr.io/onecli/onecli:1.36
+                  restart: unless-stopped
+                  depends_on:
+                    postgres:
+                      condition: service_healthy
+                  ports:
+                    - "127.0.0.1:''${ONECLI_APP_PORT:-10254}:10254"
+                    - "127.0.0.1:''${ONECLI_GATEWAY_PORT:-${oneCliPort}}:10255"
+                  volumes:
+                    - app-data:/app/data
+                    - ${certsVolumeName}:/certs
+                  environment:
+                    DATABASE_URL: postgresql://''${POSTGRES_USER:-onecli}:''${POSTGRES_PASSWORD:-onecli}@postgres:5432/''${POSTGRES_DB:-onecli}
+                  networks:
+                    - onecli
+
+                postgres:
+                  image: postgres:18-alpine
+                  restart: unless-stopped
+                  environment:
+                    POSTGRES_USER: ''${POSTGRES_USER:-onecli}
+                    POSTGRES_PASSWORD: ''${POSTGRES_PASSWORD:-onecli}
+                    POSTGRES_DB: ''${POSTGRES_DB:-onecli}
+                  volumes:
+                    - pgdata:/var/lib/postgresql
+                  ports:
+                    - "''${ONECLI_BIND_HOST:-127.0.0.1}:''${POSTGRES_PORT:-5432}:5432"
+                  healthcheck:
+                    test: ["CMD-SHELL", "pg_isready -U ''${POSTGRES_USER:-onecli}"]
+                    interval: 5s
+                    timeout: 3s
+                    start_period: 15s
+                    retries: 10
+                  networks:
+                    - onecli
+
+              volumes:
+                ${certsVolumeName}:
+                pgdata:
+                app-data:
+
+              networks:
+                onecli:
+                  driver: bridge
+            '';
+          };
+
           buildImage = rec {
             cliName = "build-agent-oci-image-into-podman";
             cli = pkgs.writeShellApplication {
@@ -54,20 +129,20 @@
                   exit 1
                 fi
 
-                if podman image exists "${imageName}"; then
-                  echo "image '${imageName}' already exists, skipping build" >&2
+                if podman image exists "${agentImageName}"; then
+                  echo "image '${agentImageName}' already exists, skipping build" >&2
                   exit 2
                 fi
 
-                echo "building '${imageName}' image..." >&2
-                podman build -f "${dockerfile}" -t ${imageName}
-                echo "image '${imageName}' built successfully" >&2
+                echo "building '${agentImageName}' image..." >&2
+                podman build -f "${dockerfile}" -t ${agentImageName}
+                echo "image '${agentImageName}' built successfully" >&2
               '';
             };
           };
 
-          runContainer = rec {
-            cliName = "run-agent-in-podman";
+          upStack = rec {
+            cliName = "run-agent-stack-in-podman";
             cli = pkgs.writeShellApplication {
               name = cliName;
               text = ''
@@ -76,40 +151,48 @@
                   exit 1
                 fi
 
-                if ! podman image exists "${imageName}"; then
-                  echo "image '${imageName}' not found in podman" >&2
-                  echo "to build image, run" >&2
-                  echo "" >&2
-                  echo "  ${buildImage.cliName}" >&2
-                  echo "" >&2
-                  exit 1
+                if ! podman image exists "${agentImageName}"; then
+                  echo "image '${agentImageName}' not found, building it..." >&2
+                  podman build -f "${dockerfile}" -t ${agentImageName}
+                  echo "image '${agentImageName}' built successfully" >&2
                 fi
 
                 echo "creating .agent/ directory" >&2
                 mkdir -p .agent/{config,claude}
 
-                echo "spinning up container in the background... (name='${containerName}')" >&2
-                if ! podman container exists "${containerName}" 2>/dev/null; then
-                  podman run --detach                   \
-                    --name ${containerName}             \
-                    -v .:${workdir}:Z                   \
-                    -v .agent/config:/root/.config:Z   \
-                    -v .agent/claude:/root/.claude:Z   \
-                    -v ${workdir}/.agent                \
-                    -w ${workdir}                       \
-                    ${imageName} sleep infinity
-                  echo "container successfully started in the background" >&2
-                elif [ "running" = "$(podman container inspect -f '{{.State.Status}}' "${containerName}" 2>/dev/null)" ]; then
-                  echo "container already running" >&2
-                else
-                  echo "container already existed but was stopped" >&2
-                  podman start ${containerName} 2>/dev/null 1>/dev/null
-                  echo "container restarted" >&2
+                echo "rendering compose file to .agent/compose.yml" >&2
+                install -m 644 "${composeFile}" .agent/compose.yml
+
+                echo "spinning up stack in the background... (project='${consumer}')" >&2
+                podman compose -p ${consumer} -f .agent/compose.yml --project-directory . up -d
+                echo "" >&2
+                echo "to shell in:         podman exec -it ${agentContainerName} bash" >&2
+                echo "to use Claude Code:  podman exec -it ${agentContainerName} claude" >&2
+                echo "OneCli dashboard:    http://localhost:${oneCliUiPort}" >&2
+                echo "" >&2
+              '';
+            };
+          };
+
+          downStack = rec {
+            cliName = "stop-agent-stack-in-podman";
+            cli = pkgs.writeShellApplication {
+              name = cliName;
+              text = ''
+                if ! command -v podman &> /dev/null; then
+                  echo "Error: expected podman in PATH, but not found" >&2
+                  exit 1
                 fi
-                echo "" >&2
-                echo "to shell in:         podman exec -it ${containerName} bash" >&2
-                echo "to use Claude Code:  podman exec -it ${containerName} claude" >&2
-                echo "" >&2
+
+                if [ ! -f .agent/compose.yml ]; then
+                  echo "Error: .agent/compose.yml not found, nothing to stop" >&2
+                  echo "(did you run ${upStack.cliName} from this directory?)" >&2
+                  exit 1
+                fi
+
+                echo "tearing down stack... (project='${consumer}')" >&2
+                podman compose -p ${consumer} -f .agent/compose.yml --project-directory . down
+                echo "stack stopped" >&2
               '';
             };
           };
@@ -161,7 +244,8 @@
               pkgs.prettier
 
               customAgentInPodman.buildImage.cli
-              customAgentInPodman.runContainer.cli
+              customAgentInPodman.upStack.cli
+              customAgentInPodman.downStack.cli
             ];
             shellHook = ''
               ${gitHooks.shellHook}
@@ -171,7 +255,8 @@
               echo "lagun agent container:" >&2
               echo "" >&2
               echo "  ${customAgentInPodman.buildImage.cliName}" >&2
-              echo "  ${customAgentInPodman.runContainer.cliName}" >&2
+              echo "  ${customAgentInPodman.upStack.cliName}" >&2
+              echo "  ${customAgentInPodman.downStack.cliName}" >&2
               echo "" >&2
             '';
           };

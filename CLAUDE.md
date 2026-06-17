@@ -6,7 +6,7 @@
 
 - **`lib.mkAgentImage`** — builds a Podman-compatible (OCI) agent container image with Claude Code, the `lagun` user, and the varlock credential skill baked in.
 - **`packages.claudeCode`** and **`packages.varlock`** — pre-packaged musl binaries, usable directly in a consuming project's dev shell.
-- **`compose.yml`** — a ready-to-use Podman Compose file that starts the coding agent alongside OneCLI.
+- **`upStack`/`downStack`** — CLI commands (exposed in the dev shell) that render a per-consumer Podman Compose file and start/stop the coding agent alongside OneCLI.
 
 There is no Python, no application code, and no copy-paste template here. Lagun is a development dependency.
 
@@ -44,16 +44,16 @@ host
   ├── OneCLI container  (HTTP proxy, holds real secrets, swaps them in-flight)
   │     └── port 8080
   └── agent container   (Claude Code, dummy secrets, HTTP_PROXY → OneCLI)
-        └── /home/lagun/workspace  ← project root mounted from host
+        └── /workspace  ← project root mounted from host
 ```
 
 Entry point:
 
 ```sh
-AGENT_IMAGE=my-project-agent:latest podman compose up
+run-agent-stack-in-podman   # builds the image if needed, then starts both containers
 ```
 
-`compose.yml` (provided by lagun) wires the two containers together, sets `HTTP_PROXY`/`HTTPS_PROXY` on the agent, and waits for OneCLI to be healthy before starting the agent.
+The compose file is rendered by Nix (consumer-stamped container/volume names baked in) and materialized to `.agent/compose.yml`. It wires the two containers together, sets `HTTP_PROXY`/`HTTPS_PROXY` on the agent, and waits for OneCLI to be healthy before starting the agent. Tear the stack down with `stop-agent-stack-in-podman`.
 
 ---
 
