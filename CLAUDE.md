@@ -90,10 +90,10 @@ The compose file is rendered by Nix (consumer-stamped container/volume names bak
   }:
     flake-utils.lib.eachDefaultSystem (
       system: let
-        name = "consumer-project";
-
         pkgs = nixpkgs.legacyPackages.${system};
-        lagunShell = lagun.devShells.${system}.createShell name;
+        lagunShell = lagun.devShells.${system}.createShell {
+          name = "consumer-project";
+        };
       in {
 
         devShells.default = pkgs.mkShell {
@@ -109,3 +109,16 @@ The compose file is rendered by Nix (consumer-stamped container/volume names bak
 ```
 
 The consuming project is responsible for its own `shellHook`.
+
+### Adding packages to the agent image
+
+Pass `extraDockerfileLines` to install extra tooling into the agent container. The lines are placed in a new `FROM base AS consumer` stage so the lagun base stage is never modified.
+
+```nix
+lagunShell = lagun.devShells.${system}.createShell {
+  name = "consumer-project";
+  extraDockerfileLines = ''
+    RUN apt-get update && apt-get install -y python3 && rm -rf /var/lib/apt/lists/*
+  '';
+};
+```

@@ -20,11 +20,14 @@
       system: let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        agentInPodman = consumer: rec {
-          agentImageName = "${consumer}-lagun";
-          agentContainerName = "${consumer}-lagun-agent";
-          onecliContainerName = "${consumer}-lagun-onecli";
-          certsVolumeName = "${consumer}-lagun-onecli-certs";
+        agentInPodman = {
+          name,
+          extraDockerfileLines ? "",
+        }: rec {
+          agentImageName = "${name}-lagun";
+          agentContainerName = "${name}-lagun-agent";
+          onecliContainerName = "${name}-lagun-onecli";
+          certsVolumeName = "${name}-lagun-onecli-certs";
           workdir = "/workspace";
           oneCliUiPort = "10254";
           oneCliPort = "10255";
@@ -54,7 +57,11 @@
               RUN bun add -g @anthropic-ai/claude-code
 
               WORKDIR ${workdir}
-
+              ${
+                if extraDockerfileLines != ""
+                then "\n\nFROM base AS consumer\n${extraDockerfileLines}"
+                else ""
+              }
               CMD ["claude"]
             '';
           };
@@ -176,8 +183,8 @@
                 echo "rendering compose file to .agent/compose.yml" >&2
                 install -m 644 "${composeFile}" .agent/compose.yml
 
-                echo "spinning up stack in the background... (project='${consumer}')" >&2
-                podman compose -p ${consumer} -f .agent/compose.yml --project-directory . up -d
+                echo "spinning up stack in the background... (project='${name}')" >&2
+                podman compose -p ${name} -f .agent/compose.yml --project-directory . up -d
                 echo "" >&2
                 echo "to shell in:         podman exec -it ${agentContainerName} bash" >&2
                 echo "to use Claude Code:  podman exec -it ${agentContainerName} claude" >&2
@@ -203,8 +210,8 @@
                   exit 1
                 fi
 
-                echo "tearing down stack... (project='${consumer}')" >&2
-                podman compose -p ${consumer} -f .agent/compose.yml --project-directory . down
+                echo "tearing down stack... (project='${name}')" >&2
+                podman compose -p ${name} -f .agent/compose.yml --project-directory . down
                 echo "stack stopped" >&2
               '';
             };
@@ -248,8 +255,11 @@
           };
         };
 
-        shell = name: let
-          customAgentInPodman = agentInPodman name;
+        shell = {
+          name,
+          extraDockerfileLines ? "",
+        }: let
+          customAgentInPodman = agentInPodman {inherit name extraDockerfileLines;};
         in
           pkgs.mkShell {
             packages = [
@@ -282,7 +292,7 @@
 
         devShells = {
           createShell = shell;
-          default = shell "lagun";
+          default = shell {name = "lagun";};
         };
       }
     );
