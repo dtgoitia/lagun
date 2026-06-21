@@ -29,18 +29,29 @@
           oneCliUiPort = "10254";
           oneCliPort = "10255";
 
+          ubuntuVersion = "26.04";
+          bunVersion = "1.3.14"; # find latest at https://bun.sh/
+
           dockerfile = pkgs.writeTextFile {
             name = "lagun-Dockerfile";
             text = ''
-              FROM docker.io/library/node:20-slim
+              FROM docker.io/library/ubuntu:${ubuntuVersion} AS base
 
-              RUN apt-get update && apt-get install -y \
-                  git \
-                  curl \
-                  make \
-                  && rm -rf /var/lib/apt/lists/*
+              # even using apt-get, some packages ask the user questions
+              ENV DEBIAN_FRONTEND=noninteractive
 
-              RUN npm install -g @anthropic-ai/claude-code
+              RUN apt-get update                               \
+                && apt-get install -y --no-install-recommends  \
+                  git                                          \
+                  unzip            `# required to install bun` \
+                  curl             `# required to install bun` \
+                  ca-certificates  `# required to install bun` \
+                && rm -rf /var/lib/apt/lists/*
+
+              RUN curl -fsSL https://bun.sh/install | bash -s "bun-v${bunVersion}"
+
+              ENV PATH="/root/.bun/bin:''${PATH}"
+              RUN bun add -g @anthropic-ai/claude-code
 
               WORKDIR ${workdir}
 
