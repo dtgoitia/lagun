@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(spec-0-create)",
+      "Skill(spec-1-understand)",
+      "Skill(spec-2-design-implementation)",
+      "Skill(spec-3-task-up)",
+      "Skill(spec-4-do-task-with-human-intervention)",
+      "Skill(spec-5-complete-task)"
+    ]
+  }
+}

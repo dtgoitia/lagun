@@ -19,6 +19,7 @@
     flake-utils.lib.eachDefaultSystem (
       system: let
         pkgs = nixpkgs.legacyPackages.${system};
+        defaultSkills = ./.claude/skills;
 
         agentInPodman = {
           name,
@@ -274,6 +275,36 @@
               ${gitHooks.shellHook}
 
               ${customAgentInPodman.setGitIgnore.cliBin}
+
+              ${
+                if name == "lagun"
+                then "" # do nothing
+                else ''
+                  mkdir -p .claude/skills
+                  for skill_dir in ${defaultSkills}/*/; do
+                    skill_name=$(basename "$skill_dir")
+                    target=".claude/skills/$skill_name"
+
+                    if [ -d "$target" ]; then
+                      echo "warning: lagun skill '$skill_name' already exists, overwriting" >&2
+                    fi
+
+                    chmod -R u+w "$target" 2>/dev/null || true
+                    rm -rf "$target"
+                    cp -r "$skill_dir" "$target"
+                    chmod -R u+w "$target"
+                  done
+
+                  for skill_dir in ${defaultSkills}/*/; do
+                    skill_name=$(basename "$skill_dir")
+                    entry=".claude/skills/$skill_name/"
+
+                    if ! grep -qxF "$entry" .gitignore 2>/dev/null; then
+                      echo "$entry" >> .gitignore
+                    fi
+                  done
+                ''
+              }
 
               echo "lagun agent container:" >&2
               echo "" >&2
