@@ -4,9 +4,7 @@
 
 `lagun` is a Nix flake that consuming projects add as a `flake.nix` input. It provides:
 
-- **`lib.mkAgentImage`** — builds a Podman-compatible (OCI) agent container image with Claude Code, the `lagun` user, and the varlock credential skill baked in.
-- **`packages.claudeCode`** and **`packages.varlock`** — pre-packaged musl binaries, usable directly in a consuming project's dev shell.
-- **`upStack`/`downStack`** — CLI commands (exposed in the dev shell) that render a per-consumer Podman Compose file and start/stop the coding agent alongside OneCLI.
+- **`devShells.createShell { name, extraDockerfileLines? }`** — the main entry point. Returns a dev shell with tooling (alejandra, prettier) and three CLI commands: `build-agent-oci-image-into-podman`, `run-agent-stack-in-podman`, `stop-agent-stack-in-podman`. Internally generates a per-consumer Ubuntu-based Dockerfile (installs Claude Code via bun) and a Podman Compose file with consumer-stamped container and volume names.
 
 There is no Python, no application code, and no copy-paste template here. Lagun is a development dependency.
 
