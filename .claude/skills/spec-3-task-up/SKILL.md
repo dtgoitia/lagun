@@ -4,7 +4,7 @@ description: the user mentions a spec by name and wants to plan tasks for the sp
 allowed-tools: Read
 ---
 
-Read project context from [BIG_PICTURE.md](project/specs/BIG_PICTURE.md)
+Read project context from [BIG_PICTURE.md](../BIG_PICTURE.md)
 
 The user will name the spec they want to work on.
 
