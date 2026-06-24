@@ -11,7 +11,8 @@
       "Bash(chmod +x *)",
       "Bash(git *)",
       "Bash(mkdir *)",
-      "Bash(*.claude/skills/spec-0-create/script/create-spec.sh *)"
+      "Bash(*.claude/skills/spec-0-create/script/create-spec.sh *)",
+      "WebSearch"
     ]
   }
 }
