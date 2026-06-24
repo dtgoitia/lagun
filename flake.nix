@@ -35,6 +35,8 @@
 
           ubuntuVersion = "26.04";
           bunVersion = "1.3.14"; # find latest at https://bun.sh/
+          nixVersion = "2.28.3"; # find latest at https://releases.nixos.org/nix/
+          nixVolumeName = "${name}-lagun-nix";
 
           dockerfile = pkgs.writeTextFile {
             name = "lagun-Dockerfile";
@@ -44,18 +46,32 @@
               # even using apt-get, some packages ask the user questions
               ENV DEBIAN_FRONTEND=noninteractive
 
-              RUN apt-get update                               \
-                && apt-get install -y --no-install-recommends  \
-                  git                                          \
-                  unzip            `# required to install bun` \
-                  curl             `# required to install bun` \
-                  ca-certificates  `# required to install bun` \
+              RUN apt-get update                                 \
+                && apt-get install -y --no-install-recommends    \
+                  git                                            \
+                  unzip            `# required to install bun`   \
+                  curl             `# required to install bun`   \
+                  ca-certificates  `# required to install bun`   \
+                  xz-utils         `# required to install nix`   \
                 && rm -rf /var/lib/apt/lists/*
 
-              RUN curl -fsSL https://bun.sh/install | bash -s "bun-v${bunVersion}"
+              # install single-user nix
+              ENV PATH="/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:''${PATH}"
+              RUN mkdir -p /root/.config/nix                                                       \
+                && echo "experimental-features = nix-command flakes" > /root/.config/nix/nix.conf  \
+                && groupadd -g 30000 nixbld                                                        \
+                && for i in $(seq 1 32); do                                                        \
+                    useradd -u $((30000 + i)) -G nixbld -d /var/empty -s /sbin/nologin nixbld$i;   \
+                  done                                                                             \
+                && mkdir -m 0755 /nix                                                              \
+                && curl -fsSL https://releases.nixos.org/nix/nix-${nixVersion}/install             \
+                | sh -s -- --no-daemon --yes
 
+              # install Claude Code using Bun
               ENV PATH="/root/.bun/bin:''${PATH}"
-              RUN bun add -g @anthropic-ai/claude-code
+              RUN curl -fsSL https://bun.sh/install     \
+                | bash -s "bun-v${bunVersion}"          \
+                && bun add -g @anthropic-ai/claude-code
 
               WORKDIR ${workdir}
               ${
@@ -63,7 +79,7 @@
                 then "\n\nFROM base AS consumer\n${extraDockerfileLines}"
                 else ""
               }
-              CMD ["claude"]
+              CMD ["nix", "develop", "--command", "claude"]
             '';
           };
 
@@ -78,6 +94,7 @@
                   environment:
                     HTTP_PROXY: http://onecli:${oneCliPort}
                     HTTPS_PROXY: http://onecli:${oneCliPort}
+                    NO_PROXY: cache.nixos.org,github.com,raw.githubusercontent.com,objects.githubusercontent.com
                     NODE_EXTRA_CA_CERTS: /certs/onecli-ca.crt
                   working_dir: ${workdir}
                   volumes:
@@ -87,6 +104,7 @@
                     - ${certsVolumeName}:/certs:ro
                     - ${workdir}/.agent
                     - .agent/empty-file:${workdir}/.envrc:ro   # keep .envrc out of the agent's reach
+                    - ${nixVolumeName}:/nix
                   networks:
                     - onecli
 
@@ -130,6 +148,7 @@
 
               volumes:
                 ${certsVolumeName}:
+                ${nixVolumeName}:
                 pgdata:
                 app-data:
 
@@ -188,7 +207,7 @@
                 podman compose -p ${name} -f .agent/compose.yml --project-directory . up -d
                 echo "" >&2
                 echo "to shell in:         podman exec -it ${agentContainerName} bash" >&2
-                echo "to use Claude Code:  podman exec -it ${agentContainerName} claude" >&2
+                echo "to use Claude Code:  podman exec -it ${agentContainerName} nix develop --command claude" >&2
                 echo "OneCli dashboard:    http://localhost:${oneCliUiPort}" >&2
                 echo "" >&2
               '';
