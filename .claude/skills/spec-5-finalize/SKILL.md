@@ -1,6 +1,6 @@
 ---
-name: spec-5-complete-task
-description: the user mentions a spec by name and wants to complete the spec
+name: spec-5-finalize
+description: the user mentions a spec by name and wants to complete/end/finalize/wrap-up/close-off the spec
 allowed-tools: Read
 ---
 

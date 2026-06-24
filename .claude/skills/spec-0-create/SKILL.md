@@ -5,24 +5,6 @@ allowed-tools: Read, Bash
 ---
 
 1. Ask the user for a file name
-2. Run the following script:
-
-```bash
-cat << 'EOF' > specs/<file-name-chosen-by-user>.md
----
-status: draft
----
-## Summary
-
-## Context
-
-## Requirements
-
-## Constraints
-
-## Out of scope
-
-EOF
-```
-
-Ask the user if it wants to proceed to fill up the task. If the user wants to, then trigger [this skill](../spec-1-understand/SKILL.md)
+2. Run `.claude/skills/spec-0-create/script/create-spec.sh <file-name-chosen-by-user>`
+3. Commit the spec file with the `docs(spec): create spec` commit message.
+4. Ask the user if it wants to proceed to explore the spec context/requirements. If the user wants to, then trigger [this skill](../spec-1-understand/SKILL.md)
