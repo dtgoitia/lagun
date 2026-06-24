@@ -8,7 +8,8 @@
       "Skill(spec-4-do-task-with-human-intervention)",
       "Skill(spec-5-complete-task)",
       "Bash(chmod +x *)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(mkdir *)"
     ]
   }
 }
