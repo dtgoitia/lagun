@@ -1,6 +1,8 @@
-# Spec: `lagun` consumer extend `lagun` Dockerfile to can install packages
+---
+status: completed
+---
 
-Status: complete
+# Spec: `lagun` consumer extend `lagun` Dockerfile to can install packages
 
 ## Summary
 

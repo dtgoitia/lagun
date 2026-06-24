@@ -1,6 +1,8 @@
-# Spec: run agent containerized
+---
+status: completed
+---
 
-Status: complete
+# Spec: run agent containerized
 
 ## Summary
 
