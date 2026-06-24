@@ -6,7 +6,8 @@
       "Skill(spec-2-design-implementation)",
       "Skill(spec-3-task-up)",
       "Skill(spec-4-do-task-with-human-intervention)",
-      "Skill(spec-5-complete-task)"
+      "Skill(spec-5-complete-task)",
+      "Bash(git *)"
     ]
   }
 }
