@@ -292,6 +292,14 @@
               customAgentInPodman.downStack.cli
             ];
             shellHook = ''
+              # git: use host user-level ignored patterns in container
+              if [ -f "$HOME/.config/git/ignore" ]; then
+                mkdir -p .agent/config/git
+
+                # dereference possible symlinks
+                install -m 644 "$HOME/.config/git/ignore" .agent/config/git/ignore
+              fi
+
               # pre-commit: do not attempt to set up `git-hooks` inside the agent container
               #
               # - Context:
