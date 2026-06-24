@@ -21,6 +21,10 @@
         pkgs = nixpkgs.legacyPackages.${system};
         defaultSkills = ./.claude/skills;
 
+        # if this environment variable is set, it indicates we are inside the
+        # agent container
+        isRunningInContainerEnvVar = "LAGUN_AGENT";
+
         agentInPodman = {
           name,
           extraDockerfileLines ? "",
@@ -92,7 +96,7 @@
                   image: ${agentImageName}
                   command: sleep infinity
                   environment:
-                    LAGUN_AGENT: "1"
+                    ${isRunningInContainerEnvVar}: "1"
                     HTTP_PROXY: http://onecli:${oneCliPort}
                     HTTPS_PROXY: http://onecli:${oneCliPort}
                     NO_PROXY: cache.nixos.org,github.com,raw.githubusercontent.com,objects.githubusercontent.com
@@ -159,19 +163,32 @@
             '';
           };
 
+          bashGuard = {
+            runOnlyInHost = ''
+              if [ ! -z "''${${isRunningInContainerEnvVar}:-}" ]; then
+                echo "Error: this command must only run on the host, but ${isRunningInContainerEnvVar} environment variable is set to \"''${${isRunningInContainerEnvVar}}\"" >&2
+                exit 1
+              fi
+            '';
+            podmanMustBeInPath = ''
+              if ! command -v podman &> /dev/null; then
+                echo "Error: expected podman in PATH, but not found" >&2
+                exit 2
+              fi
+            '';
+          };
+
           buildImage = rec {
             cliName = "build-agent-oci-image-into-podman";
             cli = pkgs.writeShellApplication {
               name = cliName;
               text = ''
-                if ! command -v podman &> /dev/null; then
-                  echo "Error: expected podman in PATH, but not found" >&2
-                  exit 1
-                fi
+                ${bashGuard.runOnlyInHost}
+                ${bashGuard.podmanMustBeInPath}
 
                 if podman image exists "${agentImageName}"; then
                   echo "image '${agentImageName}' already exists, skipping build" >&2
-                  exit 2
+                  exit 3
                 fi
 
                 echo "building '${agentImageName}' image..." >&2
@@ -186,10 +203,8 @@
             cli = pkgs.writeShellApplication {
               name = cliName;
               text = ''
-                if ! command -v podman &> /dev/null; then
-                  echo "Error: expected podman in PATH, but not found" >&2
-                  exit 1
-                fi
+                ${bashGuard.runOnlyInHost}
+                ${bashGuard.podmanMustBeInPath}
 
                 if ! podman image exists "${agentImageName}"; then
                   echo "image '${agentImageName}' not found, building it..." >&2
@@ -220,15 +235,13 @@
             cli = pkgs.writeShellApplication {
               name = cliName;
               text = ''
-                if ! command -v podman &> /dev/null; then
-                  echo "Error: expected podman in PATH, but not found" >&2
-                  exit 1
-                fi
+                ${bashGuard.runOnlyInHost}
+                ${bashGuard.podmanMustBeInPath}
 
                 if [ ! -f .agent/compose.yml ]; then
                   echo "Error: .agent/compose.yml not found, nothing to stop" >&2
                   echo "(did you run ${upStack.cliName} from this directory?)" >&2
-                  exit 1
+                  exit 3
                 fi
 
                 echo "tearing down stack... (project='${name}')" >&2
@@ -244,6 +257,8 @@
             cli = pkgs.writeShellApplication {
               name = cliName;
               text = ''
+                ${bashGuard.runOnlyInHost}
+
                 GITIGNORE=".gitignore"
                 AGENT_DIR=".agent/"
 
@@ -281,17 +296,13 @@
           extraDockerfileLines ? "",
         }: let
           customAgentInPodman = agentInPodman {inherit name extraDockerfileLines;};
-        in
-          pkgs.mkShell {
-            packages = [
-              pkgs.alejandra
-              pkgs.prettier
 
-              customAgentInPodman.buildImage.cli
-              customAgentInPodman.upStack.cli
-              customAgentInPodman.downStack.cli
-            ];
-            shellHook = ''
+          shellHook = {
+            common = ''
+            '';
+
+            # aka, not in-container
+            hostOnly = ''
               # git: use host user-level ignored patterns in container
               if [ -f "$HOME/.config/git/ignore" ]; then
                 mkdir -p .agent/config/git
@@ -332,41 +343,9 @@
               #   will already been built into the in-container nix store, and the symlink
               #   points to exactly the same path in the nix store as the host does
               #   (because the target nix resources were built deterministically).
-              if [ -z "''${LAGUN_AGENT:-}" ]; then
-                ${gitHooks.shellHook}
-              fi
+              ${gitHooks.shellHook}
 
               ${customAgentInPodman.setGitIgnore.cliBin}
-
-              ${
-                if name == "lagun"
-                then "" # do nothing
-                else ''
-                  mkdir -p .claude/skills
-                  for skill_dir in ${defaultSkills}/*/; do
-                    skill_name=$(basename "$skill_dir")
-                    target=".claude/skills/$skill_name"
-
-                    if [ -d "$target" ]; then
-                      echo "warning: lagun skill '$skill_name' already exists, overwriting" >&2
-                    fi
-
-                    chmod -R u+w "$target" 2>/dev/null || true
-                    rm -rf "$target"
-                    cp -r "$skill_dir" "$target"
-                    chmod -R u+w "$target"
-                  done
-
-                  for skill_dir in ${defaultSkills}/*/; do
-                    skill_name=$(basename "$skill_dir")
-                    entry=".claude/skills/$skill_name/"
-
-                    if ! grep -qxF "$entry" .gitignore 2>/dev/null; then
-                      echo "$entry" >> .gitignore
-                    fi
-                  done
-                ''
-              }
 
               echo "lagun agent container:" >&2
               echo "" >&2
@@ -374,6 +353,57 @@
               echo "  ${customAgentInPodman.upStack.cliName}" >&2
               echo "  ${customAgentInPodman.downStack.cliName}" >&2
               echo "" >&2
+            '';
+
+            lagunConsumerOnly = ''
+              mkdir -p .claude/skills
+              for skill_dir in ${defaultSkills}/*/; do
+                skill_name=$(basename "$skill_dir")
+                target=".claude/skills/$skill_name"
+
+                if [ -d "$target" ]; then
+                  echo "warning: lagun skill '$skill_name' already exists, overwriting" >&2
+                fi
+
+                chmod -R u+w "$target" 2>/dev/null || true
+                rm -rf "$target"
+                cp -r "$skill_dir" "$target"
+                chmod -R u+w "$target"
+              done
+
+              for skill_dir in ${defaultSkills}/*/; do
+                skill_name=$(basename "$skill_dir")
+                entry=".claude/skills/$skill_name/"
+
+                if ! grep -qxF "$entry" .gitignore 2>/dev/null; then
+                  echo "$entry" >> .gitignore
+                fi
+              done
+            '';
+          };
+        in
+          pkgs.mkShell {
+            packages = [
+              pkgs.alejandra
+              pkgs.prettier
+
+              customAgentInPodman.buildImage.cli
+              customAgentInPodman.upStack.cli
+              customAgentInPodman.downStack.cli
+            ];
+
+            shellHook = ''
+              ${shellHook.common}
+
+              ${
+                if name == "lagun"
+                then "" # do nothing
+                else shellHook.lagunConsumerOnly
+              }
+
+              if [ -z "''${${isRunningInContainerEnvVar}:-}" ]; then
+                ${shellHook.hostOnly}
+              fi
             '';
           };
       in {
