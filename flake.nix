@@ -365,12 +365,11 @@
                   echo "warning: lagun skill '$skill_name' already exists, overwriting" >&2
                 fi
 
-                chmod -R u+w "$target" 2>/dev/null || true
                 rm -rf "$target"
-                cp -r "$skill_dir" "$target"
-                chmod -R u+w "$target"
+                cp -r --no-preserve=mode "$skill_dir" "$target"
               done
 
+              # git: ignore lagun skills
               for skill_dir in ${defaultSkills}/*/; do
                 skill_name=$(basename "$skill_dir")
                 entry=".claude/skills/$skill_name/"
