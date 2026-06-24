@@ -100,7 +100,7 @@
                   working_dir: ${workdir}
                   volumes:
                     - .:${workdir}:Z
-                    - .agent/config:/root/.config:Z
+                    - .agent/config/git:/root/.config/git:Z
                     - .agent/claude:/root/.claude:Z
                     - ${certsVolumeName}:/certs:ro
                     - ${workdir}/.agent
