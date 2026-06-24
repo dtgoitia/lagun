@@ -92,6 +92,7 @@
                   image: ${agentImageName}
                   command: sleep infinity
                   environment:
+                    LAGUN_AGENT: "1"
                     HTTP_PROXY: http://onecli:${oneCliPort}
                     HTTPS_PROXY: http://onecli:${oneCliPort}
                     NO_PROXY: cache.nixos.org,github.com,raw.githubusercontent.com,objects.githubusercontent.com
@@ -291,7 +292,41 @@
               customAgentInPodman.downStack.cli
             ];
             shellHook = ''
-              ${gitHooks.shellHook}
+              # pre-commit: do not attempt to set up `git-hooks` inside the agent container
+              #
+              # - Context:
+              #   - When entering a nix shell on the host, the `git-hooks` in `flake.nix`
+              #     create the `.pre-commit-config.yaml`, which is a symlink.
+              #   - When the agent container runs, `.pre-commit-config.yaml` is mounted
+              #     info the container.
+              #   - `.pre-commit-config.yaml`, both in the host and in the container, is
+              #     generated deterministically from the same `flake.nix`. In both cases
+              #     the file should be identical, and point to the identical nix
+              #     resources.
+              #   - When a nix shell is entered in the container, the `git-hooks` inside
+              #     the container will try to manipulate the `.pre-commit-config.yaml`
+              #     file.
+              #   - When a nix shell is entered in the container, the nix derivations
+              #     built inside the container will be identical to the ones built in
+              #     the host.
+              #   - When a nix shell is entered in the container, the `git-hooks`
+              #     related nix derivations are also built, even if they are used when
+              #     entering the nix shell.
+              #
+              # - Problem: the nix installed inside the agent container cannot
+              #   manipulate the mounted `.pre-commit-config.yaml`, it gets an error
+              #   saying that the resource is 'busy'.
+              #
+              # - Solution: do not allow `git-hooks` to run its setup phase when
+              #   entering the nix shell inside the container. This way, `git-hooks` won't
+              #   attempt to manipulate `.pre-commit-config.yaml`. Using the hosts
+              #   `.pre-commit-config.yaml` symlink is fine because the resources needed
+              #   will already been built into the in-container nix store, and the symlink
+              #   points to exactly the same path in the nix store as the host does
+              #   (because the target nix resources were built deterministically).
+              if [ -z "''${LAGUN_AGENT:-}" ]; then
+                ${gitHooks.shellHook}
+              fi
 
               ${customAgentInPodman.setGitIgnore.cliBin}
 
