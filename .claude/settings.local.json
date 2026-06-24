@@ -9,7 +9,8 @@
       "Skill(spec-5-complete-task)",
       "Bash(chmod +x *)",
       "Bash(git *)",
-      "Bash(mkdir *)"
+      "Bash(mkdir *)",
+      "Bash(*.claude/skills/spec-0-create/script/create-spec.sh *)"
     ]
   }
 }
