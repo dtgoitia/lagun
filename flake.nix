@@ -28,19 +28,45 @@
         agentInPodman = {
           name,
           extraDockerfileLines ? "",
+          hostOciDaemons ? {},
         }: rec {
+          _hostOciDaemons =
+            {
+              podmanSocket = null;
+              dockerSocket = null;
+            }
+            // hostOciDaemons;
+
           agentImageName = "${name}-lagun";
           agentContainerName = "${name}-lagun-agent";
           onecliContainerName = "${name}-lagun-onecli";
           certsVolumeName = "${name}-lagun-onecli-certs";
-          workdir = "/workspace";
           oneCliUiPort = "10254";
           oneCliPort = "10255";
 
           ubuntuVersion = "26.04";
           bunVersion = "1.3.14"; # find latest at https://bun.sh/
           nixVersion = "2.28.3"; # find latest at https://releases.nixos.org/nix/
+          dockerComposeVersion = "5.1.3"; # find latest at https://github.com/docker/compose/releases
           nixVolumeName = "${name}-lagun-nix";
+
+          podmanSocketInContainer = "/run/podman/podman.sock";
+          dockerSocketInContainer = "/var/run/docker.sock";
+
+          hasPodman = _hostOciDaemons.podmanSocket != null;
+          hasDocker = _hostOciDaemons.dockerSocket != null;
+
+          dockerComposeDockerfileBlock =
+            if hasDocker
+            then ''
+              # install docker compose plugin (pinned binary — amd64 only, see Out of scope)
+              RUN curl -fsSL https://github.com/docker/compose/releases/download/v${dockerComposeVersion}/docker-compose-linux-x86_64 \
+                -o /usr/local/bin/docker-compose \
+                && chmod +x /usr/local/bin/docker-compose \
+                && mkdir -p /usr/local/lib/docker/cli-plugins \
+                && ln -s /usr/local/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
+            ''
+            else "";
 
           dockerfile = pkgs.writeTextFile {
             name = "lagun-Dockerfile";
@@ -50,6 +76,9 @@
               # even using apt-get, some packages ask the user questions
               ENV DEBIAN_FRONTEND=noninteractive
 
+              # in-container bind-mount target dir for Podman socket must exist in image
+              RUN mkdir -p /run/podman
+
               RUN apt-get update                                 \
                 && apt-get install -y --no-install-recommends    \
                   git                                            \
@@ -57,7 +86,18 @@
                   curl             `# required to install bun`   \
                   ca-certificates  `# required to install bun`   \
                   xz-utils         `# required to install nix`   \
+                  podman                                         ${
+                if hasDocker
+                then "\\\n    docker.io                                      \\"
+                else "\\"
+              }
                 && rm -rf /var/lib/apt/lists/*
+
+              ${
+                if hasDocker
+                then "RUN usermod -aG docker root"
+                else ""
+              }
 
               # install single-user nix
               ENV PATH="/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:''${PATH}"
@@ -77,7 +117,8 @@
                 | bash -s "bun-v${bunVersion}"          \
                 && bun add -g @anthropic-ai/claude-code
 
-              WORKDIR ${workdir}
+              ${dockerComposeDockerfileBlock}
+
               ${
                 if extraDockerfileLines != ""
                 then "\n\nFROM base AS consumer\n${extraDockerfileLines}"
@@ -95,21 +136,55 @@
                   container_name: ${agentContainerName}
                   image: ${agentImageName}
                   command: sleep infinity
+                  ${
+                # keep host supplementary groups (e.g. the host `docker` group)
+                # so the container process can reach the bind-mounted Docker
+                # socket. In rootless Podman the host `docker` GID is unmapped in
+                # the container's user namespace, so it shows up as nobody:nogroup
+                # and being in the in-container `docker` group does not help —
+                # `keep-groups` retains host group membership at the host level
+                # instead. Requires the host user to be in the host `docker` group
+                # and the `crun` runtime (the rootless default). Not needed for the
+                # Podman socket: the host user owns it and maps to container root.
+                if hasDocker
+                then "group_add:\n      - keep-groups"
+                else ""
+              }
                   environment:
                     ${isRunningInContainerEnvVar}: "1"
                     HTTP_PROXY: http://onecli:${oneCliPort}
                     HTTPS_PROXY: http://onecli:${oneCliPort}
                     NO_PROXY: cache.nixos.org,github.com,raw.githubusercontent.com,objects.githubusercontent.com
                     NODE_EXTRA_CA_CERTS: /certs/onecli-ca.crt
-                  working_dir: ${workdir}
+                    ${
+                if hasPodman
+                then "CONTAINER_HOST: unix://${podmanSocketInContainer}"
+                else ""
+              }
+                    ${
+                if hasDocker
+                then "DOCKER_HOST: unix://${dockerSocketInContainer}"
+                else ""
+              }
+                  working_dir: ''${HOST_PROJECT_PATH}
                   volumes:
-                    - .:${workdir}:Z
-                    - .agent/config/git:/root/.config/git:Z
-                    - .agent/claude:/root/.claude:Z
+                    - ''${HOST_PROJECT_PATH}:''${HOST_PROJECT_PATH}:Z
+                    - ''${HOST_PROJECT_PATH}/.agent/config/git:/root/.config/git:Z
+                    - ''${HOST_PROJECT_PATH}/.agent/claude:/root/.claude:Z
+                    - ''${HOST_PROJECT_PATH}/.agent
+                    - ''${HOST_PROJECT_PATH}/.agent/empty-file:''${HOST_PROJECT_PATH}/.envrc:ro   # keep .envrc out of the agent's reach
                     - ${certsVolumeName}:/certs:ro
-                    - ${workdir}/.agent
-                    - .agent/empty-file:${workdir}/.envrc:ro   # keep .envrc out of the agent's reach
                     - ${nixVolumeName}:/nix
+                    ${
+                if hasPodman
+                then "- ${_hostOciDaemons.podmanSocket}:${podmanSocketInContainer}"
+                else ""
+              }
+                    ${
+                if hasDocker
+                then "- ${_hostOciDaemons.dockerSocket}:${dockerSocketInContainer}"
+                else ""
+              }
                   networks:
                     - onecli
 
@@ -163,18 +238,36 @@
             '';
           };
 
-          bashGuard = {
-            runOnlyInHost = ''
-              if [ ! -z "''${${isRunningInContainerEnvVar}:-}" ]; then
-                echo "Error: this command must only run on the host, but ${isRunningInContainerEnvVar} environment variable is set to \"''${${isRunningInContainerEnvVar}}\"" >&2
-                exit 1
-              fi
+          bash = {
+            guard = {
+              runOnlyInHost = ''
+                if [ ! -z "''${${isRunningInContainerEnvVar}:-}" ]; then
+                  echo "Error: this command must only run on the host, but ${isRunningInContainerEnvVar} environment variable is set to \"''${${isRunningInContainerEnvVar}}\"" >&2
+                  exit 1
+                fi
+              '';
+              podmanMustBeInPath = ''
+                if ! command -v podman &> /dev/null; then
+                  echo "Error: expected podman in PATH, but not found" >&2
+                  exit 2
+                fi
+              '';
+            };
+
+            bootstrapAgentDir = ''
+              echo "creating .agent/ directory" >&2
+              mkdir -p .agent/{config,claude}
+              touch .agent/empty-file
             '';
-            podmanMustBeInPath = ''
-              if ! command -v podman &> /dev/null; then
-                echo "Error: expected podman in PATH, but not found" >&2
-                exit 2
-              fi
+
+            renderDockerfile = ''
+              echo "rendering Dockerfile file to .agent/Dockerfile" >&2
+              install -m 644 "${dockerfile}" .agent/Dockerfile
+            '';
+
+            renderComposeFile = ''
+              echo "rendering compose file to .agent/compose.yml" >&2
+              install -m 644 "${composeFile}" .agent/compose.yml
             '';
           };
 
@@ -183,13 +276,17 @@
             cli = pkgs.writeShellApplication {
               name = cliName;
               text = ''
-                ${bashGuard.runOnlyInHost}
-                ${bashGuard.podmanMustBeInPath}
+                ${bash.guard.runOnlyInHost}
+                ${bash.guard.podmanMustBeInPath}
 
                 if podman image exists "${agentImageName}"; then
                   echo "image '${agentImageName}' already exists, skipping build" >&2
                   exit 3
                 fi
+
+                ${bash.bootstrapAgentDir}
+                ${bash.renderDockerfile}
+                ${bash.renderComposeFile}
 
                 echo "building '${agentImageName}' image..." >&2
                 podman build -f "${dockerfile}" -t ${agentImageName}
@@ -203,8 +300,8 @@
             cli = pkgs.writeShellApplication {
               name = cliName;
               text = ''
-                ${bashGuard.runOnlyInHost}
-                ${bashGuard.podmanMustBeInPath}
+                ${bash.guard.runOnlyInHost}
+                ${bash.guard.podmanMustBeInPath}
 
                 if ! podman image exists "${agentImageName}"; then
                   echo "image '${agentImageName}' not found, building it..." >&2
@@ -212,15 +309,13 @@
                   echo "image '${agentImageName}' built successfully" >&2
                 fi
 
-                echo "creating .agent/ directory" >&2
-                mkdir -p .agent/{config,claude}
-                touch .agent/empty-file
-
-                echo "rendering compose file to .agent/compose.yml" >&2
-                install -m 644 "${composeFile}" .agent/compose.yml
+                ${bash.bootstrapAgentDir}
+                ${bash.renderDockerfile}
+                ${bash.renderComposeFile}
 
                 echo "spinning up stack in the background... (project='${name}')" >&2
-                podman compose -p ${name} -f .agent/compose.yml --project-directory . up -d
+                HOST_PROJECT_PATH="$(pwd)" \
+                  podman compose -p ${name} -f .agent/compose.yml up -d
                 echo "" >&2
                 echo "to shell in:         podman exec -it ${agentContainerName} bash" >&2
                 echo "to use Claude Code:  podman exec -it ${agentContainerName} nix develop --command claude" >&2
@@ -235,8 +330,8 @@
             cli = pkgs.writeShellApplication {
               name = cliName;
               text = ''
-                ${bashGuard.runOnlyInHost}
-                ${bashGuard.podmanMustBeInPath}
+                ${bash.guard.runOnlyInHost}
+                ${bash.guard.podmanMustBeInPath}
 
                 if [ ! -f .agent/compose.yml ]; then
                   echo "Error: .agent/compose.yml not found, nothing to stop" >&2
@@ -245,7 +340,8 @@
                 fi
 
                 echo "tearing down stack... (project='${name}')" >&2
-                podman compose -p ${name} -f .agent/compose.yml --project-directory . down
+                HOST_PROJECT_PATH="$(pwd)" \
+                  podman compose -p ${name} -f .agent/compose.yml down
                 echo "stack stopped" >&2
               '';
             };
@@ -257,7 +353,7 @@
             cli = pkgs.writeShellApplication {
               name = cliName;
               text = ''
-                ${bashGuard.runOnlyInHost}
+                ${bash.guard.runOnlyInHost}
 
                 GITIGNORE=".gitignore"
                 AGENT_DIR=".agent/"
@@ -294,11 +390,18 @@
         shell = {
           name,
           extraDockerfileLines ? "",
+          hostOciDaemons ? {
+            podmanSocket = null;
+            dockerSocket = null;
+          },
         }: let
-          customAgentInPodman = agentInPodman {inherit name extraDockerfileLines;};
+          customAgentInPodman = agentInPodman {inherit name extraDockerfileLines hostOciDaemons;};
 
           shellHook = {
             common = ''
+              ${customAgentInPodman.bash.bootstrapAgentDir}
+              ${customAgentInPodman.bash.renderDockerfile}
+              ${customAgentInPodman.bash.renderComposeFile}
             '';
 
             # aka, not in-container
@@ -379,6 +482,30 @@
                 fi
               done
             '';
+
+            containerOnly =
+              (
+                if customAgentInPodman.hasPodman
+                then ''
+                  if [ ! -S "${customAgentInPodman.podmanSocketInContainer}" ]; then
+                    echo "Warning: Podman socket not found at ${customAgentInPodman.podmanSocketInContainer}" >&2
+                    echo "Container operations (podman, podman compose) will not work." >&2
+                    echo "Ensure the host Podman socket is mounted — was the stack started with run-agent-stack-in-podman?" >&2
+                  fi
+                ''
+                else ""
+              )
+              + (
+                if customAgentInPodman.hasDocker
+                then ''
+                  if [ ! -S "${customAgentInPodman.dockerSocketInContainer}" ]; then
+                    echo "Warning: Docker socket not found at ${customAgentInPodman.dockerSocketInContainer}" >&2
+                    echo "Container operations (docker, docker compose) will not work." >&2
+                    echo "Ensure the host Docker socket is mounted — was the stack started with run-agent-stack-in-podman?" >&2
+                  fi
+                ''
+                else ""
+              );
           };
         in
           pkgs.mkShell {
@@ -402,6 +529,9 @@
 
               if [ -z "''${${isRunningInContainerEnvVar}:-}" ]; then
                 ${shellHook.hostOnly}
+              else
+                :
+                ${shellHook.containerOnly}
               fi
             '';
           };
@@ -414,7 +544,13 @@
 
         devShells = {
           createShell = shell;
-          default = shell {name = "lagun";};
+          default = shell {
+            name = "lagun";
+            hostOciDaemons = {
+              podmanSocket = "/run/user/1000/podman/podman.sock";
+              dockerSocket = "/var/run/docker.sock";
+            };
+          };
         };
       }
     );
