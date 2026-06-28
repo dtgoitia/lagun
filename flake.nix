@@ -238,6 +238,27 @@
             '';
           };
 
+          fishAbbreviationsFile = pkgs.writeTextFile {
+            name = "lagun-fish-abbreviations.fish";
+            text = ''
+              abbr --add bui ${buildImage.cliName}
+              abbr --add run ${upStack.cliName}
+              abbr --add sto ${downStack.cliName}
+              abbr --add she podman exec -it ${agentContainerName} bash
+              abbr --add cla podman exec -it ${agentContainerName} nix develop --command claude
+            '';
+          };
+
+          # fish auto-sources `vendor_conf.d/*.fish` from every entry in
+          # $XDG_DATA_DIRS at startup. Placing the abbreviations here and pointing
+          # $XDG_DATA_DIRS at this store path (see shellHook) makes the single fish
+          # that `nix develop --command fish` launches register the abbreviations
+          # itself — no nested fish required.
+          fishVendorConfDir = pkgs.runCommand "lagun-fish-vendor-conf" {} ''
+            mkdir -p "$out/fish/vendor_conf.d"
+            cp ${fishAbbreviationsFile} "$out/fish/vendor_conf.d/lagun-abbr.fish"
+          '';
+
           bash = {
             guard = {
               runOnlyInHost = ''
@@ -456,6 +477,15 @@
               echo "  ${customAgentInPodman.upStack.cliName}" >&2
               echo "  ${customAgentInPodman.downStack.cliName}" >&2
               echo "" >&2
+
+              # Make lagun's fish abbreviations available to the fish that
+              # `nix develop --command fish` launches, without spawning a nested
+              # fish. fish auto-sources vendor_conf.d/*.fish from each
+              # $XDG_DATA_DIRS entry at startup, and env vars exported here are
+              # inherited by the --command process.
+              if command -v fish &>/dev/null; then
+                export XDG_DATA_DIRS="${customAgentInPodman.fishVendorConfDir}:''${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+              fi
             '';
 
             lagunConsumerOnly = ''
