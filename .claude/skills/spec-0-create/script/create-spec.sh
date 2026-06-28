@@ -7,6 +7,7 @@ cat << 'EOF' > "$file"
 ---
 status: draft
 ---
+
 ## Summary
 
 ## Context
