@@ -41,6 +41,11 @@
           agentContainerName = "${name}-lagun-agent";
           onecliContainerName = "${name}-lagun-onecli";
           certsVolumeName = "${name}-lagun-onecli-certs";
+          certsMountPath = "/certs";
+          onecliCaCertFilename = "onecli-ca.crt";
+          onecliCaCertPath = "${certsMountPath}/${onecliCaCertFilename}";
+          ubuntuCustomCADir = "/usr/local/share/ca-certificates/"; # Ubuntu's default dir to add custom CAs
+          ubuntuCABundlePath = "/etc/ssl/certs/ca-certificates.crt"; # CA bundle = default CAs + custom CAs
           oneCliUiPort = "10254";
           oneCliPort = "10255";
 
@@ -68,6 +73,37 @@
             ''
             else "";
 
+          entrypointScript = pkgs.writeTextFile {
+            name = "agent-entrypoint.sh";
+            executable = true;
+            text = ''
+              #!/usr/bin/env bash
+              set -euo pipefail
+
+              # fetch OneCLI's certificate if not present
+              if [ ! -f ${onecliCaCertPath} ]; then
+                echo "ENTRYPOINT: OneCLI certificate not found at ${onecliCaCertPath}, requesting it to OneCLI service..." >&2
+                until curl -sf http://onecli:10254/api/container-config -o /tmp/onecli-config.json; do
+                  sleep 2
+                done
+                jq -r .caCertificate /tmp/onecli-config.json > ${onecliCaCertPath}
+              fi
+
+              if [ ! -f /etc/ssl/certs/${onecliCaCertFilename} ]; then
+                echo "ENTRYPOINT: adding OneCLI certificate to Ubuntu's trust store" >&2
+                # add OneCLI certificate to Ubuntu's default directory for custom CAs
+                cp ${onecliCaCertPath} ${ubuntuCustomCADir}
+
+                # Ask Ubuntu to bundle its default CAs with  ones in ${ubuntuCustomCADir}
+                update-ca-certificates
+              else
+                echo "ENTRYPOINT: OneCLI certificate present in Ubuntu's trust store -- if you suspect is stale, rebuild container image" >&2
+              fi
+
+              exec "$@"
+            '';
+          };
+
           dockerfile = pkgs.writeTextFile {
             name = "lagun-Dockerfile";
             text = ''
@@ -86,6 +122,7 @@
                   curl             `# required to install bun`   \
                   ca-certificates  `# required to install bun`   \
                   xz-utils         `# required to install nix`   \
+                  jq                                             \
                   podman                                         ${
                 if hasDocker
                 then "\\\n    docker.io                                      \\"
@@ -124,6 +161,8 @@
                 then "\n\nFROM base AS consumer\n${extraDockerfileLines}"
                 else ""
               }
+              COPY oci/entrypoint.sh /usr/local/bin/entrypoint.sh
+              ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
               CMD ["nix", "develop", "--command", "claude"]
             '';
           };
@@ -152,10 +191,14 @@
               }
                   environment:
                     ${isRunningInContainerEnvVar}: "1"
+
+                    ONECLI_AGENT_NAME: ${name}
                     HTTP_PROXY: http://onecli:${oneCliPort}
                     HTTPS_PROXY: http://onecli:${oneCliPort}
                     NO_PROXY: cache.nixos.org,github.com,raw.githubusercontent.com,objects.githubusercontent.com
-                    NODE_EXTRA_CA_CERTS: /certs/onecli-ca.crt
+                    SSL_CERT_FILE:       ${ubuntuCABundlePath}  # for curl / OpenSSL-based tools
+                    NODE_EXTRA_CA_CERTS: ${ubuntuCABundlePath}  # for Node.js tools
+                    NIX_SSL_CERT_FILE:   ${ubuntuCABundlePath}  # for nix
                     ${
                 if hasPodman
                 then "CONTAINER_HOST: unix://${podmanSocketInContainer}"
@@ -173,7 +216,7 @@
                     - ''${HOST_PROJECT_PATH}/.agent/claude:/root/.claude:Z
                     - ''${HOST_PROJECT_PATH}/.agent
                     - ''${HOST_PROJECT_PATH}/.agent/empty-file:''${HOST_PROJECT_PATH}/.envrc:ro   # keep .envrc out of the agent's reach
-                    - ${certsVolumeName}:/certs:ro
+                    - ${certsVolumeName}:${certsMountPath}
                     - ${nixVolumeName}:/nix
                     ${
                 if hasPodman
@@ -200,7 +243,6 @@
                     - "127.0.0.1:''${ONECLI_GATEWAY_PORT:-${oneCliPort}}:10255"
                   volumes:
                     - app-data:/app/data
-                    - ${certsVolumeName}:/certs
                   environment:
                     DATABASE_URL: postgresql://''${POSTGRES_USER:-onecli}:''${POSTGRES_PASSWORD:-onecli}@postgres:5432/''${POSTGRES_DB:-onecli}
                   networks:
@@ -286,6 +328,12 @@
               install -m 644 "${dockerfile}" .agent/Dockerfile
             '';
 
+            renderEntrypointScript = ''
+              echo "rendering entrypoint script to oci/entrypoint.sh" >&2
+              mkdir -p oci/
+              install -m 755 "${entrypointScript}" oci/entrypoint.sh
+            '';
+
             renderComposeFile = ''
               echo "rendering compose file to .agent/compose.yml" >&2
               install -m 644 "${composeFile}" .agent/compose.yml
@@ -307,10 +355,11 @@
 
                 ${bash.bootstrapAgentDir}
                 ${bash.renderDockerfile}
+                ${bash.renderEntrypointScript}
                 ${bash.renderComposeFile}
 
                 echo "building '${agentImageName}' image..." >&2
-                podman build -f "${dockerfile}" -t ${agentImageName}
+                podman build -f "${dockerfile}" -t ${agentImageName} .
                 echo "image '${agentImageName}' built successfully" >&2
               '';
             };
@@ -326,12 +375,15 @@
 
                 if ! podman image exists "${agentImageName}"; then
                   echo "image '${agentImageName}' not found, building it..." >&2
-                  podman build -f "${dockerfile}" -t ${agentImageName}
+                  ${bash.bootstrapAgentDir}
+                  ${bash.renderEntrypointScript}
+                  podman build -f "${dockerfile}" -t ${agentImageName} .
                   echo "image '${agentImageName}' built successfully" >&2
                 fi
 
                 ${bash.bootstrapAgentDir}
                 ${bash.renderDockerfile}
+                ${bash.renderEntrypointScript}
                 ${bash.renderComposeFile}
 
                 echo "spinning up stack in the background... (project='${name}')" >&2
@@ -422,6 +474,7 @@
             common = ''
               ${customAgentInPodman.bash.bootstrapAgentDir}
               ${customAgentInPodman.bash.renderDockerfile}
+              ${customAgentInPodman.bash.renderEntrypointScript}
               ${customAgentInPodman.bash.renderComposeFile}
             '';
 
