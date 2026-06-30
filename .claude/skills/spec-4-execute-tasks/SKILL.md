@@ -20,4 +20,4 @@ The user will name the spec they want to work on.
 8. Mark the task checkbox.
 9. Commit changes using a git commit message with the task ID at the end of the message. Use this format` [<task-id>]`.
 10. If there are pending tasks, jump back to step 6.
-11. Once all tasks are completed, let the user know and ask if it wants to finalize the spec file. If the user wants to, then trigger [this skill](../spec-5-finalize/SKILL.md); else end skill.
+11. Once all tasks are completed, let the user know and ask if it wants to finalize the spec file. If the user wants to, then trigger [this skill](../spec-6-finalize/SKILL.md); else end skill.
