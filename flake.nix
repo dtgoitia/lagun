@@ -40,6 +40,8 @@
           agentImageName = "${name}-lagun";
           agentContainerName = "${name}-lagun-agent";
           onecliContainerName = "${name}-lagun-onecli";
+
+          agentContainerEntrypointPath = "/usr/local/bin/entrypoint.sh";
           certsVolumeName = "${name}-lagun-onecli-certs";
           certsMountPath = "/certs";
           onecliCaCertFilename = "onecli-ca.crt";
@@ -80,12 +82,30 @@
               #!/usr/bin/env bash
               set -euo pipefail
 
+              # OneCLI only intercepts and swaps secrets into requests whose
+              # proxy connection carries this container's agent access token
+              # (as the CONNECT/Proxy-Authorization credentials). Without it,
+              # OneCLI can't tell which agent is calling and just tunnels the
+              # request through untouched, so dummy secrets leak through
+              # unmodified. Fetch it fresh on every start (it is cheap, and
+              # this call also hands back the CA certificate below).
+              echo "ENTRYPOINT: requesting OneCLI container config..." >&2
+              until curl -sf http://onecli:10254/api/container-config -o /tmp/onecli-config.json; do
+                sleep 2
+              done
+              echo "ENTRYPOINT: OneCLI container config fetched" >&2
+
+              # OneCLI reports its own address as host.docker.internal, which
+              # is not resolvable from inside this compose network -- swap it
+              # for the `onecli` service name, keeping the embedded token.
+              onecliProxyUrl="$(jq -r .env.HTTP_PROXY /tmp/onecli-config.json | sed 's#host\.docker\.internal#onecli#')"
+              echo "ENTRYPOINT: overriding HTTP_PROXY/HTTPS_PROXY to point to ''${onecliProxyUrl}" >&2
+              export HTTP_PROXY="''${onecliProxyUrl}"
+              export HTTPS_PROXY="''${onecliProxyUrl}"
+
               # fetch OneCLI's certificate if not present
               if [ ! -f ${onecliCaCertPath} ]; then
-                echo "ENTRYPOINT: OneCLI certificate not found at ${onecliCaCertPath}, requesting it to OneCLI service..." >&2
-                until curl -sf http://onecli:10254/api/container-config -o /tmp/onecli-config.json; do
-                  sleep 2
-                done
+                echo "ENTRYPOINT: OneCLI certificate not found at ${onecliCaCertPath}, saving it..." >&2
                 jq -r .caCertificate /tmp/onecli-config.json > ${onecliCaCertPath}
               fi
 
@@ -161,8 +181,9 @@
                 then "\n\nFROM base AS consumer\n${extraDockerfileLines}"
                 else ""
               }
-              COPY oci/entrypoint.sh /usr/local/bin/entrypoint.sh
-              ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+              COPY oci/entrypoint.sh ${agentContainerEntrypointPath}
+              RUN chmod +x ${agentContainerEntrypointPath}
+              ENTRYPOINT ["${agentContainerEntrypointPath}"]
               CMD ["nix", "develop", "--command", "claude"]
             '';
           };
@@ -193,8 +214,9 @@
                     ${isRunningInContainerEnvVar}: "1"
 
                     ONECLI_AGENT_NAME: ${name}
-                    HTTP_PROXY: http://onecli:${oneCliPort}
-                    HTTPS_PROXY: http://onecli:${oneCliPort}
+                    # HTTP_PROXY/HTTPS_PROXY are set at runtime by the entrypoint
+                    # script, which embeds the agent access token OneCLI requires
+                    # to identify the caller and perform the in-flight swap.
                     NO_PROXY: cache.nixos.org,github.com,raw.githubusercontent.com,objects.githubusercontent.com
                     SSL_CERT_FILE:       ${ubuntuCABundlePath}  # for curl / OpenSSL-based tools
                     NODE_EXTRA_CA_CERTS: ${ubuntuCABundlePath}  # for Node.js tools
@@ -280,14 +302,23 @@
             '';
           };
 
+          # purpose: development
+          # wrapped by entrypoint to expose dynamically tweaked environment variables and CA certs
+          # wrapped in nix shell to expose development tooling to the agent
+          claudeCmd = "podman exec -it ${agentContainerName} ${agentContainerEntrypointPath} nix develop --command claude";
+
+          # purpose: debugging
+          # wrapped by entrypoint to expose dynamically tweaked environment variables and CA certs
+          debugShellCmd = "podman exec -it ${agentContainerName} ${agentContainerEntrypointPath} bash";
+
           fishAbbreviationsFile = pkgs.writeTextFile {
             name = "lagun-fish-abbreviations.fish";
             text = ''
               abbr --add bui ${buildImage.cliName}
               abbr --add run ${upStack.cliName}
               abbr --add sto ${downStack.cliName}
-              abbr --add she podman exec -it ${agentContainerName} bash
-              abbr --add cla podman exec -it ${agentContainerName} nix develop --command claude
+              abbr --add she ${debugShellCmd}
+              abbr --add cla ${claudeCmd}
             '';
           };
 
@@ -390,8 +421,8 @@
                 HOST_PROJECT_PATH="$(pwd)" \
                   podman compose -p ${name} -f .agent/compose.yml up -d
                 echo "" >&2
-                echo "to shell in:         podman exec -it ${agentContainerName} bash" >&2
-                echo "to use Claude Code:  podman exec -it ${agentContainerName} nix develop --command claude" >&2
+                echo "to shell in:         ${debugShellCmd}" >&2
+                echo "to use Claude Code:  ${claudeCmd}" >&2
                 echo "OneCli dashboard:    http://localhost:${oneCliUiPort}" >&2
                 echo "" >&2
               '';
