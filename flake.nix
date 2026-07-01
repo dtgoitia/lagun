@@ -41,6 +41,7 @@
           agentContainerName = "${name}-lagun-agent";
           onecliContainerName = "${name}-lagun-onecli";
 
+          hostEntrypointPath = "oci/entrypoint.sh";
           agentContainerEntrypointPath = "/usr/local/bin/entrypoint.sh";
           certsVolumeName = "${name}-lagun-onecli-certs";
           certsMountPath = "/certs";
@@ -181,7 +182,7 @@
                 then "\n\nFROM base AS consumer\n${extraDockerfileLines}"
                 else ""
               }
-              COPY oci/entrypoint.sh ${agentContainerEntrypointPath}
+              COPY ${hostEntrypointPath} ${agentContainerEntrypointPath}
               RUN chmod +x ${agentContainerEntrypointPath}
               ENTRYPOINT ["${agentContainerEntrypointPath}"]
               CMD ["nix", "develop", "--command", "claude"]
@@ -360,9 +361,9 @@
             '';
 
             renderEntrypointScript = ''
-              echo "rendering entrypoint script to oci/entrypoint.sh" >&2
+              echo "rendering entrypoint script to ${hostEntrypointPath}" >&2
               mkdir -p oci/
-              install -m 755 "${entrypointScript}" oci/entrypoint.sh
+              install -m 755 "${entrypointScript}" ${hostEntrypointPath}
             '';
 
             renderComposeFile = ''
@@ -460,17 +461,16 @@
                 ${bash.guard.runOnlyInHost}
 
                 GITIGNORE=".gitignore"
-                AGENT_DIR=".agent/"
+                ENTRIES=(".agent/" "${hostEntrypointPath}")
 
-                if [ ! -f "$GITIGNORE" ]; then
-                  echo "$AGENT_DIR" >> "$GITIGNORE"
-                  echo ".agent/ added to $GITIGNORE"
-                fi
+                touch "$GITIGNORE"
 
-                if ! grep -qxF "$AGENT_DIR" "$GITIGNORE"; then
-                  echo "$AGENT_DIR" >> "$GITIGNORE"
-                  echo ".agent/ added to $GITIGNORE"
-                fi
+                for entry in "''${ENTRIES[@]}"; do
+                  if ! grep -qxF "$entry" "$GITIGNORE"; then
+                    echo "$entry" >> "$GITIGNORE"
+                    echo "$entry added to $GITIGNORE"
+                  fi
+                done
               '';
             };
           };
